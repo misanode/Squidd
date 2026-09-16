@@ -212,7 +212,7 @@ struct LauncherView: View {
         .padding(.trailing, WidgetMetrics.pillTrailing(artwork: artwork, mascot: mascot))
         .frame(height: WidgetMetrics.pillHeight)
         .modifier(NativeGlass(radius: WidgetMetrics.pillHeight / 2, appearance: store.widgetAppearance))
-        .overlay { PlaybackRim(playing: store.isPlaying && !store.sleeping, primaryColor: store.rimPrimaryColor, accentColor: store.rimAccentColor) }
+        .overlay { PlaybackRim(playing: store.showPlaybackRim && store.isPlaying && !store.sleeping, primaryColor: store.rimPrimaryColor, accentColor: store.rimAccentColor) }
         // Centered in the panel, so a pill with only one or two items still sits over the middle of the card.
         .frame(width: WidgetMetrics.launcher.width, height: WidgetMetrics.launcher.height)
         // One transaction for the glass, the rim and the contents, so they all move together.

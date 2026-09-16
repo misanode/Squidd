@@ -421,27 +421,37 @@ struct SettingsView: View {
     private var accent: some View {
         centeredColumn(spacing: 19) {
             Text("Pill Accent").font(SettingsStyle.font(10, .semibold))
-            HStack(spacing: 0) {
-                Text("Primary").font(SettingsStyle.font(9))
-                space(10.6)
-                ColorSwatch(color: store.rimPrimaryColor, label: "Primary") {
-                    store.setRimColors(primary: $0, accent: store.rimAccentColor)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 0) {
+                    Text("Primary").font(SettingsStyle.font(9))
+                    space(10.6)
+                    ColorSwatch(color: store.rimPrimaryColor, label: "Primary") {
+                        store.setRimColors(primary: $0, accent: store.rimAccentColor)
+                    }
+                    .opacity(store.showPlaybackRim ? 1 : 0.45)
+                    .disabled(!store.showPlaybackRim)
+                    space(10.5)
+                    Text("Highlight").font(SettingsStyle.font(9))
+                    space(10.6)
+                    ColorSwatch(color: store.rimAccentColor, label: "Highlight") {
+                        store.setRimColors(primary: store.rimPrimaryColor, accent: $0)
+                    }
+                    .opacity(store.showPlaybackRim ? 1 : 0.45)
+                    .disabled(!store.showPlaybackRim)
+                    space(23)
+                    Button("Reset") { store.resetRimColors() }
+                        .buttonStyle(PillStyle(fill: SettingsStyle.red, width: 39.5))
+                        .accessibilityLabel("Reset pill accent colors")
+                        .shown(!store.rimIsDefault)
+                    space(30.4)
+                    InfoButton(text: "Colors of the glowing ring around the launcher pill while music plays. Click a square to pick a color.")
                 }
-                space(10.5)
-                Text("Highlight").font(SettingsStyle.font(9))
-                space(10.6)
-                ColorSwatch(color: store.rimAccentColor, label: "Highlight") {
-                    store.setRimColors(primary: store.rimPrimaryColor, accent: $0)
-                }
-                space(23)
-                Button("Reset") { store.resetRimColors() }
-                    .buttonStyle(PillStyle(fill: SettingsStyle.red, width: 39.5))
-                    .accessibilityLabel("Reset pill accent colors")
-                    .shown(!store.rimIsDefault)
-                space(30.4)
-                InfoButton(text: "Colors of the glowing ring around the launcher pill while music plays. Click a square to pick a color.")
+                .frame(height: 25)
+                Toggle("Show glowing ring around pill while playing", isOn: $store.showPlaybackRim)
+                    .toggleStyle(SquareCheckboxStyle())
+                    .font(SettingsStyle.font(8.8))
+                    .frame(height: 15)
             }
-            .frame(height: 25)
         }
     }
 
