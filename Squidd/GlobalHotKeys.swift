@@ -44,7 +44,6 @@ final class GlobalHotKeys {
         }
         return errors
     }
-
     func stop() {
         for key in keys { UnregisterEventHotKey(key) }
         keys = []
