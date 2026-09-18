@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		11B5247E305D810B0085B817 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 118CF9C83053720B000F4E82 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 118CF9CF3053720B000F4E82;
+			remoteInfo = Squidd;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		118CF9D03053720B000F4E82 /* Squidd.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Squidd.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		11B5247A305D810B0085B817 /* SquiddTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SquiddTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +27,22 @@
 			path = Squidd;
 			sourceTree = "<group>";
 		};
+		11B5247B305D810B0085B817 /* SquiddTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SquiddTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		118CF9CD3053720B000F4E82 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		11B52477305D810B0085B817 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				118CF9D23053720B000F4E82 /* Squidd */,
+				11B5247B305D810B0085B817 /* SquiddTests */,
 				118CF9D13053720B000F4E82 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				118CF9D03053720B000F4E82 /* Squidd.app */,
+				11B5247A305D810B0085B817 /* SquiddTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = 118CF9D03053720B000F4E82 /* Squidd.app */;
 			productType = "com.apple.product-type.application";
 		};
+		11B52479305D810B0085B817 /* SquiddTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 11B52482305D810B0085B817 /* Build configuration list for PBXNativeTarget "SquiddTests" */;
+			buildPhases = (
+				11B52476305D810B0085B817 /* Sources */,
+				11B52477305D810B0085B817 /* Frameworks */,
+				11B52478305D810B0085B817 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				11B5247F305D810B0085B817 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				11B5247B305D810B0085B817 /* SquiddTests */,
+			);
+			name = SquiddTests;
+			packageProductDependencies = (
+			);
+			productName = SquiddTests;
+			productReference = 11B5247A305D810B0085B817 /* SquiddTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -77,11 +125,15 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2660;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					118CF9CF3053720B000F4E82 = {
 						CreatedOnToolsVersion = 26.6;
+					};
+					11B52479305D810B0085B817 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 118CF9CF3053720B000F4E82;
 					};
 				};
 			};
@@ -100,12 +152,20 @@
 			projectRoot = "";
 			targets = (
 				118CF9CF3053720B000F4E82 /* Squidd */,
+				11B52479305D810B0085B817 /* SquiddTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		118CF9CE3053720B000F4E82 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		11B52478305D810B0085B817 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +182,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		11B52476305D810B0085B817 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		11B5247F305D810B0085B817 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 118CF9CF3053720B000F4E82 /* Squidd */;
+			targetProxy = 11B5247E305D810B0085B817 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		118CF9D93053720C000F4E82 /* Debug */ = {
@@ -339,6 +414,50 @@
 			};
 			name = Release;
 		};
+		11B52480305D810B0085B817 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 88Y56FNHNH;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.SquiddTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Squidd.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Squidd";
+			};
+			name = Debug;
+		};
+		11B52481305D810B0085B817 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 88Y56FNHNH;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.misamisa.SquiddTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Squidd.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Squidd";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -356,6 +475,15 @@
 			buildConfigurations = (
 				118CF9DC3053720C000F4E82 /* Debug */,
 				118CF9DD3053720C000F4E82 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		11B52482305D810B0085B817 /* Build configuration list for PBXNativeTarget "SquiddTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				11B52480305D810B0085B817 /* Debug */,
+				11B52481305D810B0085B817 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
