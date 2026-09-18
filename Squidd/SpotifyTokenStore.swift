@@ -24,7 +24,6 @@ struct SpotifyKeychain: SpotifyTokenStorage {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
-
     func load() throws -> SpotifyTokens? {
         var request = query
         request[kSecReturnData as String] = true
