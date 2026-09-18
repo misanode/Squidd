@@ -8,8 +8,6 @@ struct SettingsResize {
     var update: (SettingsWindow.Handle) -> Void = { _ in }
     var end: () -> Void = {}
 }
-
-// Borderless so Settings can draw its own rounded glass panel; still becomes key so the Client ID field accepts typing.
 @MainActor
 final class SettingsWindow: NSWindow {
     enum Handle {
