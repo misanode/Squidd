@@ -207,7 +207,7 @@ struct AnimatedMascotView: View {
 
 struct PlaybackRim: View {
     var playing: Bool
-    var primaryColor: Color = AppStore.defaultRimPrimary
+    var primaryColor: Color = AppStore.defaultLogoPrimary
     var accentColor: Color = AppStore.defaultRimAccent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var elapsed: TimeInterval = 0

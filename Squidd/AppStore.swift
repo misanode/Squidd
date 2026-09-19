@@ -12,13 +12,11 @@ enum InkMode: String, CaseIterable {
     case automatic = "Automatic", white = "White", dark = "Dark grey", scrim = "White on scrim"
 }
 
-/// The widget's glass. Light is the original clear look; Dark tints it so white text holds up over bright windows;
-/// Automatic follows the macOS Light/Dark setting.
+/// The widget's glass. Light is the original clear look; Dark tints it so white text holds up over bright windows.
 enum WidgetAppearance: String, CaseIterable {
-    case automatic = "Automatic", light = "Light", dark = "Dark"
+    case light = "Light", dark = "Dark"
 
-    /// `scheme` is the panel's color scheme, which follows System Settings › Appearance.
-    func isDark(in scheme: ColorScheme) -> Bool { self == .dark || (self == .automatic && scheme == .dark) }
+    var isDark: Bool { self == .dark }
 }
 
 extension Color {
@@ -55,23 +53,19 @@ final class AppStore {
     var loginStatus = SMAppService.mainApp.status
     var inkChoices: [String: String]
     var customMascotPath: String? { didSet { defaults.set(customMascotPath, forKey: "customMascotPath") } }
-    var rimPrimaryHex: String? { didSet { defaults.set(rimPrimaryHex, forKey: "rimPrimaryHex") } }
     var rimAccentHex: String? { didSet { defaults.set(rimAccentHex, forKey: "rimAccentHex") } }
     var showCardOutline: Bool { didSet { defaults.set(showCardOutline, forKey: "showCardOutline") } }
     var widgetAppearance: WidgetAppearance { didSet { defaults.set(widgetAppearance.rawValue, forKey: "widgetAppearance") } }
     var logoPrimaryHex: String? { didSet { defaults.set(logoPrimaryHex, forKey: "logoPrimaryHex") } }
     var logoHighlightHex: String? { didSet { defaults.set(logoHighlightHex, forKey: "logoHighlightHex") } }
     var logoCircleHex: String? { didSet { defaults.set(logoCircleHex, forKey: "logoCircleHex") } }
-    var showLogoCircle: Bool { didSet { defaults.set(showLogoCircle, forKey: "showLogoCircle") } }
     var showPillArtwork: Bool { didSet { defaults.set(showPillArtwork, forKey: "showPillArtwork") } }
     var showMascot: Bool { didSet { defaults.set(showMascot, forKey: "showMascot") } }
     var showMusicNotes: Bool { didSet { defaults.set(showMusicNotes, forKey: "showMusicNotes") } }
-    var showPlaybackRim: Bool { didSet { defaults.set(showPlaybackRim, forKey: "showPlaybackRim") } }
     // The logo's original colors: headband and ear cups, tentacles, and the black behind it on the pill.
     static let defaultLogoPrimary = Color(hex: "#8D0404") ?? Color(red: 0.55, green: 0.02, blue: 0.02)
     static let defaultLogoHighlight = Color(hex: "#E54B4B") ?? Color(red: 0.9, green: 0.3, blue: 0.3)
     static let defaultLogoCircle = Color.black
-    static let defaultRimPrimary = Color(hex: "#8D0305") ?? Color(red: 0.55, green: 0.01, blue: 0.02)
     static let defaultRimAccent = Color(hex: "#FAFFF5") ?? .white
     private let defaults: UserDefaults
     private var tick: Task<Void, Never>?
@@ -89,57 +83,46 @@ final class AppStore {
                                    defaults: defaults)
         inkChoices = defaults.dictionary(forKey: "inkOverrides") as? [String: String] ?? [:]
         customMascotPath = defaults.string(forKey: "customMascotPath")
-        rimPrimaryHex = defaults.string(forKey: "rimPrimaryHex")
         rimAccentHex = defaults.string(forKey: "rimAccentHex")
         showCardOutline = defaults.object(forKey: "showCardOutline") as? Bool ?? true
-        widgetAppearance = WidgetAppearance(rawValue: defaults.string(forKey: "widgetAppearance") ?? "") ?? .automatic
+        // "Automatic" is gone: settle it once on whatever macOS is using now.
+        let systemDark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+        widgetAppearance = WidgetAppearance(rawValue: defaults.string(forKey: "widgetAppearance") ?? "")
+            ?? (systemDark ? .dark : .light)
         logoPrimaryHex = defaults.string(forKey: "logoPrimaryHex")
         logoHighlightHex = defaults.string(forKey: "logoHighlightHex")
         logoCircleHex = defaults.string(forKey: "logoCircleHex")
-        showLogoCircle = defaults.object(forKey: "showLogoCircle") as? Bool ?? true
         showPillArtwork = defaults.object(forKey: "showPillArtwork") as? Bool ?? true
         showMascot = defaults.object(forKey: "showMascot") as? Bool ?? true
         showMusicNotes = defaults.object(forKey: "showMusicNotes") as? Bool ?? true
-        showPlaybackRim = defaults.object(forKey: "showPlaybackRim") as? Bool ?? true
     }
 
     func setSuspended(_ value: Bool) { playback.setSuspended(value) }
     func boostPlayback(for seconds: Double = 45) { playback.boost(for: seconds) }
 
     var customMascotURL: URL? { customMascotPath.map { URL(fileURLWithPath: $0) } }
-    /// The mascot the pill draws: hiding it keeps the chosen file, so showing it again needs no re-pick.
-    var pillMascotURL: URL? { showMascot ? customMascotURL : nil }
-    var rimPrimaryColor: Color { rimPrimaryHex.flatMap { Color(hex: $0) } ?? AppStore.defaultRimPrimary }
+    /// The pill's mascot slot follows Settings alone; with no mascot chosen it holds a placeholder. Hiding it keeps
+    /// the chosen file, so showing it again needs no re-pick.
+    var pillShowsMascot: Bool { showMascot }
+    /// The ring's primary color is the logo's, so the two always match.
+    var rimPrimaryColor: Color { logoPrimaryColor }
     var rimAccentColor: Color { rimAccentHex.flatMap { Color(hex: $0) } ?? AppStore.defaultRimAccent }
-    /// True while the ring still uses the built-in colors, so Settings can hide its Reset button.
-    var rimIsDefault: Bool {
-        rimPrimaryColor.hexString == AppStore.defaultRimPrimary.hexString
-            && rimAccentColor.hexString == AppStore.defaultRimAccent.hexString
-    }
 
     var logoPrimaryColor: Color { logoPrimaryHex.flatMap { Color(hex: $0) } ?? AppStore.defaultLogoPrimary }
     var logoHighlightColor: Color { logoHighlightHex.flatMap { Color(hex: $0) } ?? AppStore.defaultLogoHighlight }
     var logoCircleColor: Color { logoCircleHex.flatMap { Color(hex: $0) } ?? AppStore.defaultLogoCircle }
-    /// True while the logo still uses its original colors, so Settings can hide its Reset button.
-    var logoIsDefault: Bool {
+    /// True while the logo and ring still use their original colors, so Settings can hide its Reset button.
+    var accentIsDefault: Bool {
         logoPrimaryColor.hexString == AppStore.defaultLogoPrimary.hexString
             && logoHighlightColor.hexString == AppStore.defaultLogoHighlight.hexString
             && logoCircleColor.hexString == AppStore.defaultLogoCircle.hexString
+            && rimAccentColor.hexString == AppStore.defaultRimAccent.hexString
     }
 
-    func resetLogoColors() {
+    func resetAccentColors() {
         logoPrimaryHex = nil
         logoHighlightHex = nil
         logoCircleHex = nil
-    }
-
-    func setRimColors(primary: Color, accent: Color) {
-        rimPrimaryHex = primary.hexString
-        rimAccentHex = accent.hexString
-    }
-
-    func resetRimColors() {
-        rimPrimaryHex = nil
         rimAccentHex = nil
     }
 
@@ -155,6 +138,9 @@ final class AppStore {
         for item in items where item.lastPathComponent.hasPrefix(prefix) { try? FileManager.default.removeItem(at: item) }
     }
 
+    /// Starts the mascot's error message, so Settings can show it on the Appearance tab.
+    static let mascotErrorPrefix = "Custom mascot"
+
     func setCustomMascot(from source: URL) {
         let directory = customAssetsDirectory
         removingExisting(prefix: "custom-mascot-", in: directory)
@@ -164,7 +150,7 @@ final class AppStore {
             try FileManager.default.copyItem(at: source, to: destination)
             customMascotPath = destination.path
             preferenceError = nil
-        } catch { preferenceError = "Custom mascot: \(error.localizedDescription)" }
+        } catch { preferenceError = "\(Self.mascotErrorPrefix): \(error.localizedDescription)" }
     }
 
     func resetCustomMascot() {
@@ -193,8 +179,8 @@ final class AppStore {
     var artwork: NSImage? { preview == .off ? playback.artwork : nil }
     /// Reserve the slot while the current track's artwork is loading, including retries.
     var showsArtwork: Bool { preview == .off ? artworkKey != "idle" : canControl }
-    /// The launcher's art slot: there's art to show and the pill hasn't been set to leave it out.
-    var pillShowsArtwork: Bool { showPillArtwork && showsArtwork }
+    /// The launcher's art slot follows Settings alone; with nothing loaded it holds a placeholder.
+    var pillShowsArtwork: Bool { showPillArtwork }
     /// Ink belongs to the artwork on screen, which lags `artworkKey` while the next track's image loads.
     private var inkKey: String { preview == .off ? playback.loadedArtworkKey : artworkKey }
     var ink: InkMode { InkMode(rawValue: inkChoices[inkKey] ?? "") ?? .automatic }
