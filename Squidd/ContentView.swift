@@ -6,8 +6,9 @@ enum WidgetMetrics {
     static let card = CGSize(width: 316, height: 192)
     static let launcher = CGSize(width: 169, height: 80)
 
-    // Launcher pill. The logo always shows; album art and the mascot join it only when there's something to draw,
-    // so with neither the pill is as wide as it is tall and reads as a circle around the logo.
+    // Launcher pill. The logo always shows; album art and the mascot join it when Settings includes them (as
+    // placeholders when there's nothing to draw), so with neither the pill is as wide as it is tall and reads as a
+    // circle around the logo.
     static let pillHeight: CGFloat = 52
     static let pillSpacing: CGFloat = 7
     static let pillLeading: CGFloat = 6
@@ -44,10 +45,8 @@ struct NativeGlass: ViewModifier {
     var appearance: WidgetAppearance = .light
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
-    /// The panels don't override their appearance, so this follows System Settings › Appearance live.
-    @Environment(\.colorScheme) private var colorScheme
 
-    private var dark: Bool { appearance.isDark(in: colorScheme) }
+    private var dark: Bool { appearance.isDark }
 
     func body(content: Content) -> some View {
         if reduceTransparency || contrast == .increased {
@@ -78,11 +77,10 @@ struct NativeGlass: ViewModifier {
 /// The dashed ring around the card: white in Light, near-black in Dark to match the tinted card.
 struct CardOutline: View {
     var appearance: WidgetAppearance
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         RoundedRectangle(cornerRadius: 29).inset(by: 1)
-            .stroke(appearance.isDark(in: colorScheme) ? Color(white: 0.08).opacity(0.85) : Color.white.opacity(0.85),
+            .stroke(appearance.isDark ? Color(white: 0.08).opacity(0.85) : Color.white.opacity(0.85),
                     style: StrokeStyle(lineWidth: 2, dash: [8, 7]))
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -177,15 +175,13 @@ struct LauncherView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// A critically damped spring: quick off the mark, a long soft settle, no overshoot.
     private static let resize = Animation.smooth(duration: 0.45)
-    /// The last mascot file shown, so a mascot whose file was just removed can still tuck away rather than vanish.
-    @State private var lastMascotURL: URL?
     var body: some View {
         let artwork = store.pillShowsArtwork
-        let mascot = store.pillMascotURL != nil
+        let mascot = store.pillShowsMascot
         // Spacing belongs to the art and mascot slots, so a closed slot leaves no gap behind.
         return HStack(spacing: 0) {
             ZStack {
-                if store.showLogoCircle { Circle().fill(store.logoCircleColor) }
+                Circle().fill(store.logoCircleColor)
                 // Same share of the circle the logo took in the original app-icon artwork (700 of 1024 px).
                 SquiddLogo(primary: store.logoPrimaryColor, highlight: store.logoHighlightColor)
                     .frame(width: WidgetMetrics.logoSize * 700 / 1024)
@@ -197,22 +193,34 @@ struct LauncherView: View {
             .animation(.spring(duration: 0.2, bounce: 0.3), value: store.logoPressed)
             // Each item stacks above the one to its right, so a sliding item passes behind its neighbor.
             .zIndex(2)
-            PreviewArtwork(store: store, radius: 10)
-                .frame(width: WidgetMetrics.artSize, height: WidgetMetrics.artSize)
-                .modifier(PillSlot(progress: artwork ? 1 : 0, width: WidgetMetrics.artSize))
-                .zIndex(1)
-            AnimatedMascotView(playing: store.isPlaying && !store.sleeping && mascot,
-                               customURL: store.customMascotURL ?? lastMascotURL)
-                .frame(width: WidgetMetrics.mascotSize, height: WidgetMetrics.mascotSize)
-                .modifier(PillSlot(progress: mascot ? 1 : 0, width: WidgetMetrics.mascotSize))
-                .zIndex(0)
+            // Nothing loaded in Spotify: the slot keeps its place and shows the design's dashed square.
+            ZStack {
+                if store.showsArtwork { PreviewArtwork(store: store, radius: 10).transition(.opacity) }
+                else { PillPlaceholder(name: "pill-placeholder-album").transition(.opacity) }
+            }
+            .frame(width: WidgetMetrics.artSize, height: WidgetMetrics.artSize)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: store.showsArtwork)
+            .modifier(PillSlot(progress: artwork ? 1 : 0, width: WidgetMetrics.artSize))
+            .zIndex(1)
+            // No mascot chosen: the design's dashed smiley holds the slot.
+            ZStack {
+                if let url = store.customMascotURL {
+                    AnimatedMascotView(playing: store.isPlaying && !store.sleeping && mascot, customURL: url)
+                        .transition(.opacity)
+                } else {
+                    PillPlaceholder(name: "appearance-mascot").transition(.opacity)
+                }
+            }
+            .frame(width: WidgetMetrics.mascotSize, height: WidgetMetrics.mascotSize)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: store.customMascotURL)
+            .modifier(PillSlot(progress: mascot ? 1 : 0, width: WidgetMetrics.mascotSize))
+            .zIndex(0)
         }
-        .onChange(of: store.customMascotURL, initial: true) { _, url in if let url { lastMascotURL = url } }
         .padding(.leading, WidgetMetrics.pillLeading)
         .padding(.trailing, WidgetMetrics.pillTrailing(artwork: artwork, mascot: mascot))
         .frame(height: WidgetMetrics.pillHeight)
         .modifier(NativeGlass(radius: WidgetMetrics.pillHeight / 2, appearance: store.widgetAppearance))
-        .overlay { PlaybackRim(playing: store.showPlaybackRim && store.isPlaying && !store.sleeping, primaryColor: store.rimPrimaryColor, accentColor: store.rimAccentColor) }
+        .overlay { PlaybackRim(playing: store.isPlaying && !store.sleeping, primaryColor: store.rimPrimaryColor, accentColor: store.rimAccentColor) }
         // Centered in the panel, so a pill with only one or two items still sits over the middle of the card.
         .frame(width: WidgetMetrics.launcher.width, height: WidgetMetrics.launcher.height)
         // One transaction for the glass, the rim and the contents, so they all move together.
@@ -220,6 +228,17 @@ struct LauncherView: View {
         .animation(reduceMotion ? nil : Self.resize, value: mascot)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Squidd launcher")
+    }
+}
+
+/// An empty pill slot: one of the design's dashed outlines, inset a little so it sits like the art it stands in for.
+struct PillPlaceholder: View {
+    var name: String
+
+    var body: some View {
+        Image(name).resizable().scaledToFit()
+            .padding(3)
+            .accessibilityHidden(true)
     }
 }
 
