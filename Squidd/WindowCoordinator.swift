@@ -372,7 +372,7 @@ final class WindowCoordinator: NSObject {
         // The pill only fills part of its panel, and shrinks when there's no album art or mascot; anywhere outside it
         // belongs to whatever is behind the launcher.
         let launcherRect = WidgetMetrics.pillRect(inLauncher: launcher.frame.size, artwork: store.pillShowsArtwork,
-                                                  mascot: store.pillMascotURL != nil)
+                                                  mascot: store.pillShowsMascot)
         let cardRect = CGRect(origin: .zero, size: card.frame.size).insetBy(dx: 6, dy: 6)
         for (panel, rect, radius) in [(launcher, launcherRect, WidgetMetrics.pillHeight / 2), (card, cardRect, CGFloat(24))] where panel.isVisible {
             let point = panel.convertPoint(fromScreen: NSEvent.mouseLocation)
@@ -388,14 +388,29 @@ final class WindowCoordinator: NSObject {
 
     func showSettings() {
         if settings == nil {
-            let window = SettingsWindow(size: SettingsView.defaultSize)
-            let resize = SettingsResize(update: { [weak window] in window?.resize(from: $0) },
-                                        end: { [weak window] in window?.endResize() })
-            window.contentView = NSHostingView(rootView: SettingsView(store: store, close: { [weak window] in window?.orderOut(nil) },
-                                                                      resize: resize))
+            let window = SettingsWindow(size: settingsDefaultSize)
+            let actions = SettingsActions(
+                close: { [weak window] in window?.orderOut(nil) },
+                resetPosition: { [weak self] in self?.resetPosition() },
+                saveDefaultSize: { [weak self, weak window] in
+                    guard let window else { return }
+                    self?.defaults.set([window.frame.width, window.frame.height], forKey: "settingsDefaultSize")
+                },
+                resetSize: { [weak self, weak window] in
+                    guard let self, let window else { return }
+                    // Keep the top edge where it is, like the player's Reset Size.
+                    var frame = window.frame
+                    frame.origin.y = frame.maxY - settingsDefaultSize.height
+                    frame.size = settingsDefaultSize
+                    window.setFrame(frame, display: true, animate: true)
+                })
+            let host = NSHostingView(rootView: SettingsView(store: store, actions: actions))
+            // The window's own minimum governs resizing; the tabs scroll when they run out of height.
+            host.sizingOptions = []
+            window.contentView = host
             // Reopen at the size and place the panel was left at.
-            if !window.setFrameUsingName("SquiddSettingsFrame") { window.center() }
-            window.setFrameAutosaveName("SquiddSettingsFrame")
+            if !window.setFrameUsingName("SquiddSettingsWindow") { window.center() }
+            window.setFrameAutosaveName("SquiddSettingsWindow")
             // A size saved before the minimum grew would cut content off; grow it back to the minimum.
             let saved = window.frame, minimum = SettingsView.minimumSize
             if saved.width < minimum.width || saved.height < minimum.height {
@@ -407,8 +422,15 @@ final class WindowCoordinator: NSObject {
         store.loginStatus = SMAppService.mainApp.status
         NSApp.activate(ignoringOtherApps: true)
         settings?.makeKeyAndOrderFront(nil)
-        // The shadow follows the panel's rounded, transparent edges once it has drawn.
-        settings?.invalidateShadow()
+    }
+
+    /// TEMPORARY: the size saved from Settings' right-click menu, else the design's.
+    private var settingsDefaultSize: CGSize {
+        if let size = defaults.array(forKey: "settingsDefaultSize") as? [Double], size.count == 2,
+           size.allSatisfy({ $0.isFinite && $0 > 0 }) {
+            return CGSize(width: max(size[0], SettingsView.minimumSize.width), height: max(size[1], SettingsView.minimumSize.height))
+        }
+        return SettingsView.defaultSize
     }
 
     func openDataFolder() {
@@ -457,10 +479,10 @@ final class PanelInteraction: NSView {
     }
     override func resetCursorRects() {
         if isLauncher {
-            // Match the pill, which narrows when there's no album art or mascot.
+            // Match the pill, which narrows when Settings leaves out the album art or the mascot.
             let store = coordinator?.store
             addCursorRect(WidgetMetrics.pillRect(inLauncher: bounds.size, artwork: store?.pillShowsArtwork ?? true,
-                                                 mascot: store.map { $0.pillMascotURL != nil } ?? true),
+                                                 mascot: store?.pillShowsMascot ?? true),
                           cursor: .openHand)
         }
         else { for corner in CardCorner.allCases { addCursorRect(cornerRect(corner), cursor: .crosshair) } }
@@ -469,7 +491,7 @@ final class PanelInteraction: NSView {
         guard isLauncher else { return false }
         let store = coordinator?.store
         return WidgetMetrics.logoRect(inLauncher: bounds.size, artwork: store?.pillShowsArtwork ?? true,
-                                      mascot: store.map { $0.pillMascotURL != nil } ?? true)
+                                      mascot: store?.pillShowsMascot ?? true)
             .contains(convert(event.locationInWindow, from: nil))
     }
     override func mouseDown(with event: NSEvent) {
