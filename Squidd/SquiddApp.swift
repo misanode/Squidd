@@ -26,10 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         windows = WindowCoordinator(store: AppStore())
         windows?.show()
-        windows?.store.spotify.restore()
-        if let auth = windows?.store.spotify, !SpotifyAuth.validClientID(auth.clientID) {
-            windows?.showSettings()
-        }
+        // Nothing to set up any more, so Settings only opens when macOS hasn't been asked for permission to drive
+        // Spotify yet — the one thing a new install still needs from the user.
+        if SpotifyAutomation.permission() == .notAsked { windows?.showSettings() }
     }
 
     func applicationWillTerminate(_ notification: Notification) { windows?.stop() }

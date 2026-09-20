@@ -101,7 +101,6 @@ final class WindowCoordinator: NSObject {
             MainActor.assumeIsolated {
                 self?.store.sleeping = true; self?.store.reconcileClock()
                 self?.setUnseen(.systemSleep, true)
-                self?.store.spotify.setSuspended(true)
                 self?.pointerTimer?.invalidate(); self?.pointerTimer = nil
                 self?.savePlacement()
             }
@@ -109,7 +108,6 @@ final class WindowCoordinator: NSObject {
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.store.sleeping = false; self?.store.reconcileClock()
-                self?.store.spotify.setSuspended(false)
                 self?.setUnseen(.systemSleep, false)
                 self?.recoverDisplay(); self?.startPointerTracking()
             }
@@ -132,8 +130,9 @@ final class WindowCoordinator: NSObject {
                 MainActor.assumeIsolated { self?.setUnseen(.screenLocked, active) }
             })
         }
-        // Spotify launching or coming to the front usually means playback is about to change, so catch it quickly.
-        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didActivateApplicationNotification] {
+        // Spotify launching, quitting or coming to the front all change what Squidd should be showing.
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didActivateApplicationNotification,
+                     NSWorkspace.didTerminateApplicationNotification] {
             workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 MainActor.assumeIsolated {
                     let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
@@ -509,12 +508,8 @@ final class PanelInteraction: NSView {
             add("Show / Hide Player", #selector(toggle), to: menu)
             add("Settings…", #selector(settings), to: menu)
             add("Open Spotify", #selector(openPlayer), to: menu)
-            if coordinator?.store.spotify.state == .connecting {
-                add("Cancel Spotify Login", #selector(cancelSpotify), to: menu)
-            } else if coordinator?.store.spotify.hasSession == true {
-                add("Disconnect Spotify", #selector(disconnectSpotify), to: menu)
-            } else {
-                add("Connect Spotify…", #selector(connectSpotify), to: menu)
+            if coordinator?.store.playback.needsAttention == true {
+                add("Fix Spotify Connection…", #selector(settings), to: menu)
             }
             menu.addItem(.separator())
             add("Set Current Size as Default", #selector(saveSize), to: menu)
@@ -543,14 +538,7 @@ final class PanelInteraction: NSView {
         item.target = self; menu.addItem(item); return item
     }
     @objc private func toggle() { coordinator?.toggleCard() }
-    @objc private func connectSpotify() {
-        coordinator?.showSettings()
-        guard let auth = coordinator?.store.spotify, SpotifyAuth.validClientID(auth.clientID) else { return }
-        auth.connect()
-    }
     @objc private func openPlayer() { coordinator?.store.openSpotify() }
-    @objc private func disconnectSpotify() { coordinator?.store.spotify.disconnect() }
-    @objc private func cancelSpotify() { coordinator?.store.spotify.cancelLogin() }
     @objc private func settings() { coordinator?.showSettings() }
     @objc private func saveSize() { coordinator?.saveDefaultSize() }
     @objc private func resetSize() { coordinator?.resetSize() }

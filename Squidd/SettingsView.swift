@@ -54,8 +54,6 @@ struct SettingsView: View {
     @Bindable var store: AppStore
     var actions: SettingsActions
     @State private var tab: SettingsTab
-    @State private var clientID = ""
-    @State private var copiedRedirect = false
     // Not wired up yet: comes after the redesign. The player already floats above other windows.
     @State private var keepOnTop = true
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -63,8 +61,8 @@ struct SettingsView: View {
     init(store: AppStore, actions: SettingsActions = SettingsActions()) {
         _store = Bindable(store)
         self.actions = actions
-        // Settings opens by itself when Spotify isn't set up, so start on the tab that fixes that.
-        _tab = State(initialValue: SpotifyAuth.validClientID(store.spotify.clientID) ? .general : .music)
+        // Settings opens by itself when Spotify needs attention, so start on the tab that fixes that.
+        _tab = State(initialValue: store.playback.needsAttention ? .music : .general)
     }
 
     var body: some View {
@@ -87,7 +85,6 @@ struct SettingsView: View {
             Button("Set Current Size as Default", action: actions.saveDefaultSize)
             Button("Reset Size", action: actions.resetSize)
         }
-        .onAppear { clientID = store.spotify.clientID }
     }
 
     // MARK: Chrome
@@ -246,84 +243,69 @@ struct SettingsView: View {
 
     // MARK: Music
 
+    /// Squidd reads the Spotify app running on this Mac over Apple Events, so there is nothing to set up beyond
+    /// letting macOS allow it. The rows reflect the two things that can be wrong: Spotify closed, or permission
+    /// not granted.
     private var music: some View {
         page(bottom: 33) {
             header("Spotify").gap(50)
-            HStack(spacing: 0) {
-                Icon("music-spotify")
-                Spacer(minLength: 16).frame(maxWidth: 42.5)
-                TextField("", text: $clientID, prompt: Text("Spotify Client ID").foregroundStyle(SettingsStyle.secondary))
-                    .textFieldStyle(.plain)
-                    .font(SettingsStyle.font(9.5, .regular))
-                    .autocorrectionDisabled()
-                    .onSubmit { _ = store.spotify.saveClientID(clientID) }
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, minHeight: 31)
-                    .background(SettingsStyle.field, in: RoundedRectangle(cornerRadius: 6))
-                    .accessibilityLabel("Spotify Client ID")
-                    .accessibilityIdentifier("spotifyClientID")
+            row("music-spotify", store.playback.status, spacing: 7) {
+                Button(spotifyActionTitle, action: fixSpotify)
+                    .buttonStyle(OutlineButtonStyle(width: 108.5))
+                    .disabled(spotifyAction == nil)
+                    .accessibilityIdentifier("spotifyConnectionAction")
             }
-            .padding(.trailing, -10)
             .gap(17.5)
-            if let note = spotifyNote { self.note(note).gap(8) }
-            row("music-save-key", "Save Client ID", spacing: 7) {
-                Toggle("Save Client ID", isOn: clientIDSaved).toggleStyle(SwitchStyle())
-            }
-            .gap(27)
-            row("music-connected", statusText, spacing: 3.5) {
-                Toggle("Spotify Connected", isOn: spotifyConnected).toggleStyle(SwitchStyle())
-                    .accessibilityIdentifier("spotifyConnectionStatus")
+            if let note = store.playback.message { self.note(note).gap(27) }
+            row("music-connected", "Squidd can control Spotify", spacing: 3.5) {
+                Toggle("Squidd can control Spotify", isOn: automationAllowed).toggleStyle(SwitchStyle())
+                    .accessibilityIdentifier("spotifyAutomationStatus")
             }
             .gap(30)
-            row("music-developer-dashboard", "Go to Developer Dashboard", spacing: 7) {
-                Button("Developer Dashboard") { NSWorkspace.shared.open(URL(string: "https://developer.spotify.com/dashboard")!) }
-                    .buttonStyle(OutlineButtonStyle(width: 108.5))
-            }
-            .gap(26.5)
-            HStack(spacing: 7) {
-                label(SpotifyAuth.redirectURI).textSelection(.enabled)
-                Button(action: copyRedirect) {
-                    Image(systemName: copiedRedirect ? "checkmark" : "square.on.square").font(.system(size: 13))
-                        .frame(width: 18, height: 18).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Copy Spotify redirect URI")
-            }
-            .frame(maxWidth: .infinity)
+            note("Squidd shows whatever is playing in the Spotify app on this Mac. Playing on another device won’t "
+                 + "appear here.")
             .gap(33.5)
         }
     }
 
-    private var spotifyNote: String? {
-        store.spotify.message ?? (store.spotify.hasSession ? store.playback.message : nil)
+    private enum SpotifyAction { case openSpotify, requestPermission, openPrivacySettings }
+
+    private var spotifyAction: SpotifyAction? {
+        switch store.playback.state {
+        case .notRunning: .openSpotify
+        case .permissionNeeded: .requestPermission
+        case .permissionDenied: .openPrivacySettings
+        default: nil
+        }
     }
 
-    private var statusText: String {
-        store.spotify.state == .disconnected ? "Not Connected to Spotify" : store.spotify.status
+    private var spotifyActionTitle: String {
+        switch spotifyAction {
+        case .openSpotify: "Open Spotify"
+        case .requestPermission: "Allow Access"
+        case .openPrivacySettings: "Open Settings"
+        case nil: "Connected"
+        }
     }
 
-    /// On once the typed ID is the saved one. Turning it on saves; editing the field turns it back off.
-    private var clientIDSaved: Binding<Bool> {
-        Binding(get: {
-            let typed = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
-            return !typed.isEmpty && typed == store.spotify.clientID
-        }, set: { on in
-            if on { _ = store.spotify.saveClientID(clientID) }
-        })
+    private func fixSpotify() {
+        switch spotifyAction {
+        case .openSpotify: store.openSpotify()
+        // Asking shows the system prompt; the answer lands in the next reading either way.
+        case .requestPermission:
+            _ = SpotifyAutomation.permission(askIfNeeded: true)
+            store.playback.retry()
+        case .openPrivacySettings: SpotifyAutomation.openPrivacySettings()
+        case nil: break
+        }
     }
 
-    /// On while there's a session or a login in progress. Off cancels the login or disconnects.
-    private var spotifyConnected: Binding<Bool> {
-        Binding(get: { store.spotify.hasSession || store.spotify.state == .connecting }, set: { on in
-            if on {
-                guard store.spotify.saveClientID(clientID) else { return }
-                store.selectPreview(.off)
-                store.spotify.connect()
-            } else if store.spotify.state == .connecting {
-                store.spotify.cancelLogin()
-            } else {
-                store.spotify.disconnect()
-            }
+    /// Reflects the Automation permission. It can be turned on (which prompts, or sends the user to System Settings
+    /// once they have refused) but not off — only macOS can revoke it.
+    private var automationAllowed: Binding<Bool> {
+        Binding(get: { SpotifyAutomation.permission() == .granted }, set: { on in
+            guard on else { SpotifyAutomation.openPrivacySettings(); return }
+            fixSpotify()
         })
     }
 
@@ -505,16 +487,6 @@ struct SettingsView: View {
     }
 
     // MARK: Actions
-
-    private func copyRedirect() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(SpotifyAuth.redirectURI, forType: .string)
-        copiedRedirect = true
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            copiedRedirect = false
-        }
-    }
 
     private func firstFrame(of url: URL) -> NSImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0,

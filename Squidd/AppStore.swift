@@ -35,7 +35,6 @@ extension Color {
 
 @MainActor @Observable
 final class AppStore {
-    let spotify: SpotifyAuth
     let playback: SpotifyPlayback
     var preview: PreviewState = .off
     /// The launcher keeps showing artwork and play state while the card is hidden, so polling slows rather than stops.
@@ -71,16 +70,17 @@ final class AppStore {
     private var tick: Task<Void, Never>?
     private var lastTick = ProcessInfo.processInfo.systemUptime
 
-    init(defaults: UserDefaults = .standard) {
+    /// `source` and `observeNotifications` exist for the checks, so they can exercise the store without touching
+    /// whatever Spotify happens to be running on the machine.
+    init(defaults: UserDefaults = .standard, source: (any NowPlayingSource)? = nil,
+         observeNotifications: Bool = true) {
         self.defaults = defaults
-        spotify = SpotifyAuth(defaults: defaults)
-        // Steady polling stays modest — the progress bar ticks locally and a track's end is anticipated — and drops
-        // to 1.5s bursts when a change is likely: Spotify launching or activating, the card opening, or the screen
-        // coming back. With the card showing: 4s playing, 10s paused, 15s with nothing loaded (240–900 requests an
-        // hour). Card hidden: 15s playing, 30s otherwise (120–240 an hour). None while nobody can see the screen.
-        playback = SpotifyPlayback(auth: spotify, pollInterval: 4, idlePollInterval: 10, emptyPollInterval: 15,
-                                   backgroundPollInterval: 15, backgroundIdlePollInterval: 30, boostInterval: 1.5,
-                                   defaults: defaults)
+        // Spotify broadcasts every state change, so these are only a safety net for a notification that never
+        // arrives: 15s while playing, 30s otherwise, 60s while the card is hidden. Squidd still reads quickly for a
+        // moment after Spotify launches or activates, the card opens, or the screen comes back.
+        playback = SpotifyPlayback(source: source, pollInterval: 15, idlePollInterval: 30,
+                                   backgroundPollInterval: 60, boostInterval: 2,
+                                   observeNotifications: observeNotifications)
         inkChoices = defaults.dictionary(forKey: "inkOverrides") as? [String: String] ?? [:]
         customMascotPath = defaults.string(forKey: "customMascotPath")
         rimAccentHex = defaults.string(forKey: "rimAccentHex")
@@ -167,8 +167,7 @@ final class AppStore {
     var title: String { preview == .off ? playback.title : (canControl ? (sampleIndex == 0 ? "Preview track" : "Preview track 2") : "Nothing playing") }
     var artist: String {
         switch preview {
-        // Before a Spotify session exists the backend has nothing to say, so the connection state stands in.
-        case .off: !spotify.hasSession ? spotify.status : playback.artist
+        case .off: playback.artist
         case .idle: "Preview · No active device"
         case .error: "Preview · Playback unavailable"
         default: sampleIndex == 0 ? "Preview · Squidd" : "Preview · Sabrina Carpenter"
@@ -250,7 +249,6 @@ final class AppStore {
     func stop() {
         tick?.cancel(); tick = nil
         playback.stop()
-        spotify.stop()
     }
 
     func toggleLogin() {
