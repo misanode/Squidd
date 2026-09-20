@@ -4,12 +4,21 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-	<!-- Spotify's Web API and album art. -->
+	<!-- Album art from Spotify's image CDN. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<!-- The loopback listener that receives the Spotify OAuth redirect on 127.0.0.1:8888. -->
-	<key>com.apple.security.network.server</key>
-	<true/>
+	<!-- Reading the now-playing track from the Spotify app over Apple Events, and sending it transport commands.
+	     These two access groups are the ones Spotify publishes in its scripting definition: the application class
+	     is in com.spotify.playback, the track class in com.spotify.library. Naming them here is the sanctioned
+	     App Sandbox mechanism, so no temporary exception is needed. -->
+	<key>com.apple.security.scripting-targets</key>
+	<dict>
+		<key>com.spotify.client</key>
+		<array>
+			<string>com.spotify.playback</string>
+			<string>com.spotify.library</string>
+		</array>
+	</dict>
 	<!-- Reading a mascot GIF the user picks in the open panel. -->
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
