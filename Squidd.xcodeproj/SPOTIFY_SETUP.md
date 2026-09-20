@@ -1,130 +1,118 @@
-# Spotify setup and live playback — native phases 3–4
+# Spotify setup and live playback
 
-This build connects your account and displays live track/episode metadata, shared
-artwork, progress and playback state. Previous, next, play/pause and seeking send
-commands to your active Spotify device. Playback preview remains separate sample
-data; set Preview to Off for live playback.
+Squidd reads the Spotify app running on this Mac over Apple Events. There is no account to
+connect, no Client ID, no developer dashboard and no Premium requirement.
 
-1. Open Squidd Settings from the menu bar or launcher’s right-click menu.
-2. Open **Developer Dashboard** and select or create your Spotify developer app.
-3. Register exactly `http://127.0.0.1:8888/callback` as a redirect URI. Use the
-   **Copy** button in Settings. Do not substitute `localhost`.
-4. Paste the app’s public **Client ID**, then click **Connect Spotify**. No client
-   secret is needed. The ID is saved in preferences; no restart is required.
-5. Finish Spotify login in your browser. Return to Settings and confirm
-   **Connected to Spotify**. The browser tab can be closed.
-6. Use **Open Spotify** and start a song on your preferred device. The card and
-   launcher share the same live session, including while the card is hidden.
+## Setup
 
-Development-mode apps require a Premium app owner and the authenticating account
-on the app’s allowed-user list. See Spotify’s current
-[quota-mode requirements](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
-Authentication success alone does not prove playback API access.
+1. Open Spotify and play something.
+2. The first time Squidd reads it, macOS asks whether Squidd may control Spotify. Choose
+   **OK**. Squidd Settings ▸ Music can ask for this deliberately with **Allow Access**.
+3. That's it. The card and launcher follow whatever Spotify is playing.
 
-If port 8888 is occupied, quit the old Electron app (or the app holding
-that port) and reconnect. Login expires after five minutes, can be cancelled in
-Settings, and is cancelled when the Mac sleeps. Settings shows denial, connection,
-Keychain and configuration errors without displaying tokens or authorization codes.
+If you choose **Don't Allow**, Settings ▸ Music shows the refusal and offers **Open
+Settings**, which opens Privacy & Security ▸ Automation, where Squidd can be re-enabled. Only
+you can undo a refusal — macOS will not ask a second time.
 
-Access/refresh tokens and expiry are stored in the macOS Keychain. Refresh runs
-60 seconds before expiry, coalesces simultaneous requests, retains an omitted
-refresh token and retries transient failures with bounded backoff. HTTP 429 delays
-are honored. Disconnect cancels work, disables session restore and deletes the
-saved Keychain item. Changing the Client ID disconnects the old session. Local
-logout does not revoke Spotify account access; that can be managed at
-[Spotify’s apps page](https://www.spotify.com/account/apps/).
+## What this covers, and what it doesn't
 
-## Playback behavior
+Squidd shows the Spotify **app on this Mac**. Playing from a phone, a speaker or the web
+player does not appear here — that is the one thing the old Web API version could do that
+this cannot. In exchange there is no setup, no login that expires, no rate limits and no
+account eligibility to worry about.
 
-One serialized loop polls `GET /v1/me/player?additional_types=track,episode` every
-five seconds while a track plays (sooner near its end, so the next track appears
-promptly) and every 15 seconds while paused or idle. Polling once a second tripped
-Spotify's rate limit for a development-mode app. This endpoint supplies metadata
-plus device restrictions without a second request. Controls honor restricted
-devices, tracks and disallowed actions. The poll interval is an internal
-constructor setting.
+Podcast episodes come through as whatever Spotify's scripting interface reports, which is
+thinner than the Web API's episode metadata and inconsistent between episodes: some carry
+duration, position and full transport, while others report no duration, so the scrubber and
+elapsed time are hidden and seeking is disabled while play/pause/skip still work. Spotify
+exposes no length for those episodes through either route, so there is nothing to fall back
+on.
 
-Commands run in the same loop, ignore duplicate clicks while busy, reject responses
-that predate a command and reconcile after 400 ms. Seeking previews locally during
-drag, submits once on release, and rolls back on command failure. Progress uses a
-250 ms monotonic tick and clamps at duration; the widget does not automatically skip
-tracks. Artwork is decoded off the main actor to a 300-pixel thumbnail and shared
-through a 40-entry LRU cache. Late results cannot replace newer artwork.
+Ads are recognised (their track ID starts `spotify:ad:`), labelled **Advertisement**, and the
+transport controls are disabled for their duration — though this is verified only against
+synthetic payloads in the checks, never a real ad. Local files play and seek normally but
+have no album art.
 
-HTTP 204 clears now-playing state. A 401 triggers one refresh/retry, then reconnect.
-403 pauses automatic polling and explains account/permission/Premium possibilities.
-404 offers Open Spotify. 429 honors Retry-After, shows the retry time, and saves it
-so relaunching during the wait does not contact Spotify early; QUOTA_EXCEEDED halts automatic
-requests. Settings provides an explicit Retry Playback action after resolving the
-underlying issue. Other failures use bounded backoff and keep credentials. Sleep,
-preview mode and logout cancel playback tasks; waking or leaving preview resumes
-when connected. Metadata and artwork are cleared on logout.
+**Squidd requires the Spotify desktop app.** It is built around Spotify specifically and does
+not read Apple Music or any other player.
+
+## How it works
+
+Spotify broadcasts a `com.spotify.client.PlaybackStateChanged` distributed notification on
+every play, pause, skip and seek, and its `userInfo` carries the whole snapshot: player
+state, track ID, name, artist, album, duration and position. The App Sandbox does not strip
+it, so nearly every update Squidd draws costs no Apple Event at all and appears instantly.
+
+Apple Events fill the gaps:
+
+- The **artwork URL**, the one field the notification omits. Fetched once per track change,
+  about 8 ms, off the main actor.
+- The **state at launch**, before any notification has been broadcast.
+- **Commands** — play, pause, next, previous, and seek.
+- A **slow safety-net poll** (15 s playing, 30 s otherwise, 60 s while the card is hidden)
+  covering anything a missed notification would strand. Squidd also reads quickly for a
+  moment after Spotify launches or activates, the card opens, or the screen comes back.
+
+These are raw `NSAppleEventDescriptor` sends, deliberately not `NSAppleScript`. Measured
+here, `NSAppleScript` costs ~62 ms a read and **deadlocks** on any thread but the main one —
+even one with a run loop — and a stuck call takes the whole process's AppleScript component
+with it. Raw events run off the main actor and cost ~8 ms.
+
+Squidd never launches Spotify on its own: every send is gated on Spotify already running.
+
+Durations arrive in **milliseconds** and positions in **seconds**, from both the notification
+and the Apple Event, despite Spotify's dictionary describing duration as seconds. The
+progress bar interpolates locally on a 250 ms tick between readings.
+
+## Entitlements
+
+`com.apple.security.scripting-targets` names the two access groups Spotify publishes in its
+scripting definition — `com.spotify.playback` for the application class, `com.spotify.library`
+for the track class. This is the sanctioned App Sandbox mechanism; no temporary exception is
+needed, which was confirmed against a signed sandboxed build from a clean permission state.
+`NSAppleEventsUsageDescription` supplies the text in the macOS prompt.
+
+`com.apple.security.network.client` remains, for album art from `i.scdn.co` — the same image
+URLs the Web API returned. `com.apple.security.network.server` is gone with the OAuth
+loopback listener.
 
 ## Checks performed
 
-- PKCE SHA-256 against the RFC 7636 known vector and URL-safe random verifier.
-- Form encoding and authorization URL parameters.
-- Callback path, Host, state, duplicate parameter, denial and size validation.
-- Mock login, relaunch restore, coalesced refresh, omitted refresh-token retention,
-  transient failures, rate-limit delay, cancellation, Client ID change, logout
-  despite Keychain deletion failure, and revoked authorization.
-- Real loopback HTTP callback, wrong-state rejection, occupied port, cancellation
-  and port reuse. No real Spotify account used in these tests.
-- Real Keychain create/read/update/delete using a unique test-only service name.
-- Mock live playback: track/episode/ad/local/null shapes, restriction decoding,
-  command verbs/seek values, one-retry 401, 204/403/404/429/quota responses,
-  serialized commands, stale polls, seek rollback, progress clamping, paused time,
-  rate-limit waiting, sleep, preview isolation, quota halt and logout.
-- Artwork: real PNG thumbnail decoding through a mocked download, LRU eviction,
-  cached reuse, and stale image rejection after track changes.
-- Existing preview playback and geometry regressions passed.
-- Full unsigned Debug Xcode build. Incoming/outgoing network capabilities enabled
-  for both Debug and Release; no global ATS exception added.
+- Snapshot values: millisecond durations, second positions, clamping past the end, ads,
+  local files, stopped, playing-with-no-metadata, and unknown-length tracks.
+- Notification parsing: a captured real payload, paused, stopped, missing player state,
+  sparse payloads, `Has Artwork: 0`, ads, and awkward track titles.
+- Apple Event error codes mapped to states: -1743 permission, -600/-609 not running,
+  -1712 timeout, -1728 nothing loaded.
+- Controller: opening read, serialized commands, dropped duplicates, stale-read rejection,
+  notification-driven updates with no read, artwork fetched once per track rather than per
+  broadcast, seek preview and rollback, seek clamping, closed Spotify, refused permission
+  not retried in a loop, transient failure and recovery, preview and sleep isolation.
+- Real PNG artwork decoding, LRU eviction and stale-image rejection (unchanged).
+- Geometry and preview playback regressions (unchanged).
+- Full unsigned Debug build.
 
-Browser login with your real developer Client ID, relaunch with real credentials,
-actual expired-token refresh, and live device playback still need account testing. The runnable local
-build is unsigned; signed App Sandbox behavior must also be checked before distribution.
-
-## Hands-on playback acceptance
-
-After connecting, start a song in Spotify and check title, artist, both artwork
-squares, elapsed time, play/pause, previous/next and seeking. Hide the card and
-confirm the launcher continues updating. Pause and resume to check the mascot.
-Then test no active device, sleep/wake, relaunch, and disconnect. The automated
-checks above use simulated Spotify responses and do not prove account eligibility.
-
-## Build and tests
-
-Run from `Squidd.xcodeproj` with Xcode installed at `/Applications/Xcode.app`:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
-  -project ../Squidd.xcodeproj -scheme Squidd \
-  -configuration Debug -destination 'platform=macOS' \
-  -derivedDataPath /tmp/squidd-native-build CODE_SIGNING_ALLOWED=NO build
-
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swiftc \
-  -parse-as-library -target arm64-apple-macos26.0 \
-  -module-cache-path /tmp/squidd-swift-cache \
-  ../Squidd/SpotifyAuth.swift ../Squidd/SpotifyLoopback.swift \
-  ../Squidd/SpotifyTokenStore.swift Checks/SpotifyAuthChecks.swift \
-  -o /tmp/squidd-auth-checks
-/tmp/squidd-auth-checks
-/tmp/squidd-auth-checks --integration
-```
-
-Run all authentication, live playback, preview and geometry checks with:
+Run everything with:
 
 ```sh
 bash Checks/run-swift-checks.sh
 ```
 
-The integration option temporarily binds port 8888 and writes/removes a dedicated
-Keychain test item. It does not read or modify the app’s Spotify credentials.
-Swift Observation macro compilation needs to run outside the agent sandbox.
+Add the live option to drive the Spotify actually running on this Mac:
 
-References: [PKCE](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow),
-[refresh](https://developer.spotify.com/documentation/web-api/tutorials/refreshing-tokens),
-[redirect URI](https://developer.spotify.com/documentation/web-api/concepts/redirect_uri).
+```sh
+/tmp/squidd-live-playback-checks --integration
+```
 
-Playback references: [state and restrictions](https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback), [seek](https://developer.spotify.com/documentation/web-api/reference/seek-to-position-in-currently-playing-track).
+It needs Spotify open with a track loaded, pauses and resumes once (briefly audible) and
+seeks to the position the track is already at (not audible). Apple Events sent from a
+terminal are attributed to that terminal, so any permission prompt names the terminal rather
+than Squidd.
+
+## Hands-on acceptance
+
+With Spotify playing, check title, artist, both artwork squares, elapsed time, play/pause,
+previous/next and seeking. Change tracks inside Spotify and confirm the card keeps up with no
+visible lag. Hide the card and confirm the launcher keeps updating. Then quit Spotify while
+playing, relaunch it, and check an ad, a local file, a podcast, sleep/wake, and a Squidd
+relaunch with no setup at all.

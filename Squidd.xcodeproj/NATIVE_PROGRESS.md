@@ -138,6 +138,76 @@ directory is unchanged. Observation macros require a build outside the agent san
 - Current staging: `/tmp/squidd-native-phase4`. Do not restore older phase copies
   over the current authentication/playback implementation.
 
+## AppleScript milestone implemented (phase 7, 2026-09-19)
+
+The Spotify Web API is gone. Squidd now reads the Spotify app on this Mac over Apple Events,
+which removes the development-mode allowlist that blocked App Store distribution, along with
+the Client ID, the developer dashboard, OAuth/PKCE, the loopback listener, Keychain tokens,
+rate limits, quota handling and the Premium requirement. Deleted: `SpotifyAuth.swift`,
+`SpotifyLoopback.swift`, `SpotifyTokenStore.swift`, `SpotifyPlaybackAPI.swift` and
+`Checks/SpotifyAuthChecks.swift`.
+
+Two spike findings shaped the design, both measured against a signed sandboxed build:
+
+- **Raw Apple Events, not `NSAppleScript`.** `NSAppleScript` costs ~62 ms median (163 ms max)
+  per read and **deadlocks** on any thread but the main one — including a dedicated thread
+  with a run loop — and a stuck call holds the AppleScript component lock for the whole
+  process, so the main thread hangs too. `with timeout` does not prevent it. Precompiling
+  saves nothing (66 ms fresh vs 62 ms precompiled): the cost is the round trip. Raw
+  `NSAppleEventDescriptor` sends run off the main actor at ~8 ms median.
+- **The notification is the data, not a trigger.** `com.spotify.client.PlaybackStateChanged`
+  arrives with its `userInfo` intact under the App Sandbox — player state, track ID, name,
+  artist, album, album artist, duration, playback position, has-artwork. So play, pause, skip
+  and seek cost zero Apple Events and appear instantly. Apple Events remain for the artwork
+  URL (once per track change), the state at launch, commands, and a slow safety net.
+
+Also confirmed: duration arrives in **milliseconds** and position in **seconds** (Spotify's
+sdef says duration is seconds — it is not); artwork URLs are the same `i.scdn.co` links the
+Web API returned, so the artwork cache and per-artwork ink choices carry over unchanged.
+
+Entitlements: `com.apple.security.scripting-targets` naming the two access groups Spotify
+publishes (`com.spotify.playback`, `com.spotify.library`) is **sufficient on its own** — no
+`temporary-exception.apple-events`, no `automation.apple-events`. Verified from a clean TCC
+state; one consent prompt, then granted. `network.server` removed with the loopback listener.
+`INFOPLIST_KEY_NSAppleEventsUsageDescription` added to both configurations.
+
+`SpotifyPlaybackState` drops `.disconnected`, `.rateLimited` and `.quotaExceeded` and gains
+`.notRunning`, `.permissionNeeded` and `.permissionDenied`. The launcher menu loses Connect /
+Disconnect / Cancel Login. Settings ▸ Music loses the Client ID field, Save Client ID,
+Developer Dashboard and redirect URI, and now shows status plus one contextual action (Open
+Spotify / Allow Access / Open Settings). Settings opens at launch only when Automation
+permission has never been requested.
+
+Preserved: the approved glass appearance hook, geometry, the 250 ms interpolated clock,
+`boost`/background/suspend behavior, the 400 ms post-command reconciliation, seek rollback,
+artwork LRU and crossfade, and preview isolation.
+
+Full unsigned Debug build passed with no new warnings. All check suites pass, including a new
+opt-in `--integration` run against the real Spotify. Squidd never launches Spotify itself.
+
+User confirmed the live result on 2026-09-19: "looks fine it changes what appears instantly
+in the music player... works fast and its even better than before." Track changes made inside
+Spotify reach the card with no visible lag, which is the notification path working as
+intended.
+
+Podcasts, from that same hands-on pass: **inconsistent, and not fixable here**. Some episodes
+report duration, position and full transport; others report no duration at all, so the card
+hides the scrubber and elapsed time and disables seeking while play/pause/skip keep working.
+That is the zero-duration fallback behaving correctly (pinned by the `unknownLength` check),
+not a defect — Spotify exposes no length for those episodes through either the scripting
+interface or the notification, so there is no second source to consult. User's read: "its no
+big deal."
+
+Ads remain **unverified against a real ad**: the user has Premium and cannot produce one.
+Detection keys off the `spotify:ad:` URI prefix and is covered only by synthetic payloads in
+the checks. If the prefix ever differs, the failure is mild — the ad would show its own title
+and the transport would stay enabled, which Spotify ignores during ads anyway.
+
+Still open: the Settings ▸ Music tab is wired to the minimum that works — its 2.0 layout
+belongs to the settings redesign, and the redesign assets `music-save-key-icon.svg` and
+`music-go-to-dev-dash.svg` are now orphaned. Signed sandboxed runtime behavior and App Store
+review of the Apple Events entitlement remain to be seen; Developer ID is the fallback.
+
 ## Next
 
 Real-account acceptance for phases 3/4 remains: connect/consent, actual metadata and
