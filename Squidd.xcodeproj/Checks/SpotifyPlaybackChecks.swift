@@ -1,19 +1,6 @@
 import AppKit
 import Foundation
 
-@MainActor
-final class PlaybackTestSession: SpotifySessionProviding {
-    var hasSession = true { didSet { sessionDidChange?() } }
-    var sessionDidChange: (() -> Void)?
-    var refreshes = 0
-    var rejected = false
-    func accessToken(forceRefresh: Bool) async throws -> String {
-        if forceRefresh { refreshes += 1 }
-        return forceRefresh ? "refreshed-test-token" : "test-token"
-    }
-    func requireReconnect() { rejected = true; hasSession = false }
-}
-
 actor EmptyArtwork: SpotifyArtworkLoading {
     func image(for url: URL) async throws -> CGImage { throw URLError(.cannotDecodeContentData) }
 }
@@ -21,27 +8,37 @@ actor EmptyArtwork: SpotifyArtworkLoading {
 @MainActor
 final class HeldArtwork: SpotifyArtworkLoading {
     var pending: [URL: CheckedContinuation<CGImage, Error>] = [:]
+    var requested: [URL] = []
     func image(for url: URL) async throws -> CGImage {
-        try await withCheckedThrowingContinuation { pending[url] = $0 }
+        requested.append(url)
+        return try await withCheckedThrowingContinuation { pending[url] = $0 }
     }
     func complete(_ url: URL, image: CGImage) { pending.removeValue(forKey: url)?.resume(returning: image) }
 }
 
+/// Stands in for the Spotify app. Nothing here sends an Apple Event.
 @MainActor
-final class PlaybackTestAPI: SpotifyPlaybackRequesting {
+final class TestSource: NowPlayingSource {
     var next: Result<SpotifyPlaybackSnapshot?, Error> = .success(nil)
+    var artwork: Result<URL?, Error> = .success(nil)
     var held: CheckedContinuation<SpotifyPlaybackSnapshot?, Error>?
     var holdNext = false
     var commandFailure: Error?
     var sent: [PlaybackCommand] = []
-    var polls = 0
+    var reads = 0
+    var artworkReads = 0
     var active = 0
     var maximumActive = 0
+
     func snapshot() async throws -> SpotifyPlaybackSnapshot? {
-        polls += 1; active += 1; maximumActive = max(maximumActive, active)
+        reads += 1; active += 1; maximumActive = max(maximumActive, active)
         defer { active -= 1 }
         if holdNext { holdNext = false; return try await withCheckedThrowingContinuation { held = $0 } }
         return try next.get()
+    }
+    func artworkURL() async throws -> URL? {
+        artworkReads += 1
+        return try artwork.get()
     }
     func send(_ command: PlaybackCommand) async throws {
         active += 1; maximumActive = max(maximumActive, active)
@@ -50,26 +47,6 @@ final class PlaybackTestAPI: SpotifyPlaybackRequesting {
         if let commandFailure { throw commandFailure }
     }
     func release(_ result: Result<SpotifyPlaybackSnapshot?, Error>) { let p = held; held = nil; p?.resume(with: result) }
-}
-
-final class PlaybackHTTPStub: URLProtocol, @unchecked Sendable {
-    struct Reply { let status: Int; let data: Data; var headers: [String: String] = [:] }
-    static let lock = NSLock()
-    nonisolated(unsafe) static var replies: [Reply] = []
-    nonisolated(unsafe) static var seen: [URLRequest] = []
-    static func reset(_ values: [Reply]) { lock.lock(); defer { lock.unlock() }; replies = values; seen = [] }
-    static var requests: [URLRequest] { lock.lock(); defer { lock.unlock() }; return seen }
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        Self.lock.lock(); Self.seen.append(request)
-        let response = Self.replies.isEmpty ? Reply(status: 500, data: Data()) : Self.replies.removeFirst()
-        Self.lock.unlock()
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: response.status, httpVersion: "HTTP/1.1", headerFields: response.headers)!, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: response.data)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-    override func stopLoading() {}
 }
 
 @main
@@ -81,247 +58,400 @@ struct SpotifyPlaybackChecks {
         }
         fatalError("Playback check timed out")
     }
-    @MainActor static func sample(_ progress: Double = 10, playing: Bool = true, id: String = "one", restricted: Bool = false, artwork: String? = nil) throws -> SpotifyPlaybackSnapshot {
-        let artworkJSON = artwork.map { "[{\"url\":\"\($0)\",\"width\":300}]" } ?? "[]"
-        return try JSONDecoder().decode(SpotifyPlaybackSnapshot.self, from: Data("""
-        {"device":{"is_active":true,"is_restricted":\(restricted),"name":"Test device"},
-         "is_playing":\(playing),"progress_ms":\(progress * 1000),"currently_playing_type":"track",
-         "item":{"id":"\(id)","name":"Track \(id)","type":"track","duration_ms":200000,
-         "artists":[{"name":"Test artist"}],"album":{"images":\(artworkJSON)}},"actions":{"disallows":{}}}
-        """.utf8))
+
+    static func sample(id: String = "spotify:track:one", playing: Bool = true, position: Double = 10,
+                       durationMilliseconds: Double = 200_000, artwork: String? = nil) -> SpotifyPlaybackSnapshot {
+        var snapshot = SpotifyPlaybackSnapshot()
+        snapshot.state = playing ? .playing : .paused
+        snapshot.trackID = id
+        snapshot.name = "Track"
+        snapshot.artist = "Test artist"
+        snapshot.album = "Test album"
+        snapshot.durationMilliseconds = durationMilliseconds
+        snapshot.positionSeconds = position
+        snapshot.artworkURL = artwork.flatMap { URL(string: $0) }
+        snapshot.hasArtwork = snapshot.artworkURL != nil
+        return snapshot
     }
+
+    /// Shaped like a real `PlaybackStateChanged` payload, captured from Spotify.
+    static func broadcast(state: String = "Playing", id: String = "spotify:track:one", name: String = "Juno",
+                          position: Double = 126.39, duration: Int = 223_192,
+                          artwork: Int = 1) -> [AnyHashable: Any] {
+        ["Player State": state, "Track ID": id, "Name": name, "Artist": "Sabrina Carpenter",
+         "Album": "Short n' Sweet", "Album Artist": "Sabrina Carpenter", "Duration": duration,
+         "Playback Position": position, "Has Artwork": artwork, "Track Number": 10, "Disc Number": 1,
+         "Popularity": 83, "Play Count": 0]
+    }
+
+    @MainActor
+    static func playback(_ source: TestSource, images: (any SpotifyArtworkLoading)? = nil,
+                         pollInterval: Double = 0.05, idlePollInterval: Double? = nil,
+                         backgroundPollInterval: Double? = nil, boostInterval: Double = 0.02,
+                         reconciliationDelay: Double = 0) -> SpotifyPlayback {
+        // Notification observation off: the checks drive `receive(notification:)` instead of a real broadcast.
+        SpotifyPlayback(source: source, images: images ?? EmptyArtwork(), pollInterval: pollInterval,
+                        idlePollInterval: idlePollInterval, backgroundPollInterval: backgroundPollInterval,
+                        boostInterval: boostInterval, reconciliationDelay: reconciliationDelay,
+                        observeNotifications: false)
+    }
+
     @MainActor static func main() async throws {
-        let track = try sample()
-        assert(track.duration == 200 && track.elapsed == 10 && track.permits(.seek(10)))
-        let restricted = try sample(restricted: true)
-        assert(!restricted.permits(.pause))
-        let episode = try JSONDecoder().decode(SpotifyPlaybackSnapshot.self, from: Data("""
-        {"device":{"is_active":true},"is_playing":false,"progress_ms":4000,"currently_playing_type":"episode",
-        "item":{"type":"episode","name":"Episode","duration_ms":60000,"show":{"name":"Podcast"},
-        "images":[{"url":"https://example.com/640","width":640},{"url":"https://example.com/300","width":300}]},
-        "actions":{"seeking":true,"skipping_next":true}}
-        """.utf8))
-        assert(episode.item?.artist == "Podcast" && episode.item?.artworkURL?.lastPathComponent == "300")
-        assert(!episode.permits(.seek(1)) && !episode.permits(.next) && episode.permits(.play))
-        let ad = try JSONDecoder().decode(SpotifyPlaybackSnapshot.self, from: Data("{\"item\":null,\"currently_playing_type\":\"ad\",\"is_playing\":true}".utf8))
-        assert(ad.title == "Advertisement" && !ad.permits(.next))
-        let local = try JSONDecoder().decode(SpotifyPlaybackSnapshot.self, from: Data("{\"item\":{\"name\":\"Local file\",\"type\":\"track\",\"is_local\":true},\"is_playing\":false}".utf8))
-        assert(local.title == "Local file" && !local.permits(.seek(0)))
-        assert(SpotifyPlaybackAPI.retryDelay("12") == 12 && SpotifyPlaybackAPI.retryDelay("NaN") == 30)
-        try await checkHTTP()
-        try await checkLifecycle()
-        try await checkArtwork()
-        try await checkProgressAndStaleArtwork()
-        try await checkPersistedRateLimit()
-        try await checkPollPacing()
-        print("Live playback checks passed: metadata variants, restrictions, API commands/401/204/403/404/429, serialized polling, stale-response rejection, seek rollback, quota halt, logout, sleep, preview, poll pacing, artwork LRU and decoding.")
+        try checkSnapshotValues()
+        try checkNotificationParsing()
+        try checkErrorMapping()
+        try await checkInitialReadAndCommands()
+        try await checkNotificationDrivesUpdates()
+        try await checkArtworkFetchedOncePerTrack()
+        try await checkSeekRollback()
+        try await checkFailureStates()
+        try await checkPreviewAndSuspend()
+        print("Spotify playback checks passed")
+        if CommandLine.arguments.contains("--integration") { try await checkAgainstRealSpotify() }
     }
-    @MainActor static func checkHTTP() async throws {
-        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PlaybackHTTPStub.self]
-        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let auth = PlaybackTestSession(); let api = SpotifyPlaybackAPI(auth: auth, session: session)
-        PlaybackHTTPStub.reset([.init(status: 401, data: Data()), .init(status: 204, data: Data())])
-        let empty = try await api.snapshot()
-        assert(empty == nil && auth.refreshes == 1)
-        assert(PlaybackHTTPStub.requests.count == 2 && PlaybackHTTPStub.requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer refreshed-test-token")
-        PlaybackHTTPStub.reset(Array(repeating: .init(status: 204, data: Data()), count: 5))
-        for command: PlaybackCommand in [.previous, .next, .play, .pause, .seek(12.345)] { try await api.send(command) }
-        let requests = PlaybackHTTPStub.requests
-        assert(requests.map(\.httpMethod) == ["POST", "POST", "PUT", "PUT", "PUT"])
-        assert(requests.map { $0.url!.lastPathComponent } == ["previous", "next", "play", "pause", "seek"])
-        assert(requests.last!.url!.query == "position_ms=12345")
-        for (status, expected) in [(403, "denied"), (404, "Open Spotify")] {
-            PlaybackHTTPStub.reset([.init(status: status, data: Data())])
-            do { _ = try await api.snapshot(); fatalError("HTTP failure accepted") }
-            catch { assert(error.localizedDescription.contains(expected)) }
+
+    // MARK: Integration (opt-in)
+
+    /// Talks to the Spotify actually running on this Mac. Opt-in with `--integration`, because it needs Spotify
+    /// open with a track loaded, and because Apple Events sent from a terminal are attributed to that terminal —
+    /// so the Automation prompt, if it appears, names the terminal rather than Squidd.
+    ///
+    /// It pauses and resumes once, which is briefly audible, and seeks to the position the track is already at,
+    /// which is not. Both write paths use different event codes, so both are worth exercising.
+    @MainActor static func checkAgainstRealSpotify() async throws {
+        guard SpotifyEventBridge.isSpotifyRunning else {
+            print("Integration checks skipped: Spotify isn't running")
+            return
         }
-        PlaybackHTTPStub.reset([.init(status: 429, data: Data("{\"error\":{\"reason\":\"QUOTA_EXCEEDED\"}}".utf8))])
-        do { _ = try await api.snapshot(); fatalError("Quota accepted") }
-        catch { guard case SpotifyPlaybackError.quotaExceeded = error else { fatalError("Wrong quota error") } }
-        PlaybackHTTPStub.reset([.init(status: 429, data: Data(), headers: ["Retry-After": "45"])])
-        do { _ = try await api.snapshot(); fatalError("Rate limit accepted") }
-        catch { guard case SpotifyPlaybackError.rateLimited(45) = error else { fatalError("Wrong rate limit") } }
-        PlaybackHTTPStub.reset([.init(status: 401, data: Data()), .init(status: 401, data: Data())])
-        do { _ = try await api.snapshot(); fatalError("Persistent 401 accepted") } catch {}
-        assert(auth.rejected && PlaybackHTTPStub.requests.count == 2)
+        let permission = SpotifyAutomation.permission()
+        guard permission == .granted else {
+            print("Integration checks skipped: Automation permission is \(permission)")
+            return
+        }
+        let bridge = SpotifyEventBridge()
+        guard let snapshot = try await bridge.snapshot() else { fatalError("A running Spotify should report state") }
+        guard snapshot.isLoaded else {
+            print("Integration checks skipped: Spotify is open but nothing is loaded")
+            return
+        }
+        assert(!snapshot.name.isEmpty, "A loaded track should have a name")
+        assert(snapshot.trackID.hasPrefix("spotify:"), "Track ID should be a Spotify URI, got \(snapshot.trackID)")
+        // The units, against the live app: a track is minutes long, not hours, and position sits inside it.
+        assert(snapshot.duration > 1 && snapshot.duration < 24 * 3600,
+               "Duration looks wrong in seconds: \(snapshot.duration) — is Spotify still reporting milliseconds?")
+        assert(snapshot.positionSeconds <= snapshot.duration + 1, "Position should fall within the track")
+
+        let artwork = try await bridge.artworkURL()
+        if snapshot.hasArtwork {
+            assert(artwork?.scheme == "https", "Artwork should be an https URL, got \(String(describing: artwork))")
+        }
+
+        // Transport, restoring whatever state the track was in.
+        let wasPlaying = snapshot.isPlaying
+        try await bridge.send(wasPlaying ? .pause : .play)
+        try await Task.sleep(for: .milliseconds(400))
+        let flipped = try await bridge.snapshot()
+        assert(flipped?.isPlaying == !wasPlaying, "Play/pause should change the reported state")
+        try await bridge.send(wasPlaying ? .play : .pause)
+        try await Task.sleep(for: .milliseconds(400))
+
+        // Seek to where it already is: proves the write path without moving the track.
+        if let now = try await bridge.snapshot()?.elapsed, now > 0 {
+            try await bridge.send(.seek(now))
+        }
+        print("Integration checks passed against the running Spotify: '\(snapshot.name)' by \(snapshot.artist)")
     }
-    @MainActor static func checkLifecycle() async throws {
-        let auth = PlaybackTestSession(), api = PlaybackTestAPI()
-        api.next = .success(try sample())
-        let playback = SpotifyPlayback(auth: auth, api: api, images: EmptyArtwork(), pollInterval: 0.05, reconciliationDelay: 0.01)
+
+    // MARK: Snapshot
+
+    @MainActor static func checkSnapshotValues() throws {
+        // Spotify reports duration in milliseconds and position in seconds. Getting this backwards is the single
+        // easiest mistake here, so it is pinned down.
+        let track = sample()
+        assert(track.duration == 200, "duration should convert milliseconds to seconds")
+        assert(track.elapsed == 10)
+        assert(track.identity == "spotify:track:one")
+        assert(track.title == "Track")
+        assert(track.isLoaded && track.isPlaying && !track.isAd && !track.isLocal)
+        assert(track.permits(.play) && track.permits(.next) && track.permits(.seek(10)))
+
+        // Past the end clamps rather than running away.
+        let overrun = sample(position: 500)
+        assert(overrun.elapsed == 200)
+
+        // An ad: named plainly, and no transport.
+        var ad = sample(id: "spotify:ad:abc")
+        ad.name = ""
+        assert(ad.isAd && ad.title == "Advertisement")
+        assert(!ad.permits(.play) && !ad.permits(.next) && !ad.permits(.seek(1)))
+
+        // A local file has no artwork URL but still plays and seeks.
+        let local = sample(id: "spotify:local:something")
+        assert(local.isLocal && local.artworkURL == nil && local.permits(.seek(1)))
+
+        // Stopped: nothing loaded, nothing offered.
+        var stopped = SpotifyPlaybackSnapshot()
+        stopped.state = .stopped
+        assert(!stopped.isLoaded && stopped.title == "Nothing playing" && stopped.identity == "idle")
+        assert(!stopped.permits(.play))
+
+        // Playing with no metadata at all — Spotify does this in the gap between tracks.
+        var blank = SpotifyPlaybackSnapshot()
+        blank.state = .playing
+        assert(blank.title == "Playback unavailable")
+
+        // A zero duration hides the scrubber rather than offering a seek into nothing.
+        let unknownLength = sample(durationMilliseconds: 0)
+        assert(unknownLength.duration == 0 && !unknownLength.permits(.seek(1)) && unknownLength.permits(.play))
+    }
+
+    // MARK: Notification
+
+    @MainActor static func checkNotificationParsing() throws {
+        guard let parsed = SpotifyPlaybackSnapshot(notification: broadcast()) else {
+            fatalError("A well-formed broadcast should parse")
+        }
+        assert(parsed.isPlaying && parsed.trackID == "spotify:track:one")
+        assert(parsed.name == "Juno" && parsed.artist == "Sabrina Carpenter" && parsed.album == "Short n' Sweet")
+        assert(abs(parsed.duration - 223.192) < 0.001, "Duration arrives in milliseconds here too")
+        assert(abs(parsed.elapsed - 126.39) < 0.001, "Playback Position arrives in seconds")
+        assert(parsed.hasArtwork)
+
+        let paused = SpotifyPlaybackSnapshot(notification: broadcast(state: "Paused"))
+        assert(paused?.isPlaying == false && paused?.isLoaded == true)
+
+        // "Stopped" means nothing is loaded, whatever else the payload says.
+        let stopped = SpotifyPlaybackSnapshot(notification: broadcast(state: "Stopped"))
+        assert(stopped?.isLoaded == false)
+
+        // Without a player state there is nothing to trust.
+        assert(SpotifyPlaybackSnapshot(notification: ["Name": "Juno"]) == nil)
+
+        // Missing optional keys degrade rather than crash.
+        let sparse = SpotifyPlaybackSnapshot(notification: ["Player State": "Playing"])
+        assert(sparse?.name == "" && sparse?.duration == 0 && sparse?.isLoaded == false)
+
+        // Has Artwork = 0 means don't spend an Apple Event looking for a URL.
+        let artless = SpotifyPlaybackSnapshot(notification: broadcast(artwork: 0))
+        assert(artless?.hasArtwork == false)
+
+        // Titles are arbitrary text; nothing here is delimiter-parsed, so punctuation is just punctuation.
+        let awkward = SpotifyPlaybackSnapshot(notification: broadcast(name: "a|b\u{1}c — “quoted” 🎧"))
+        assert(awkward?.name == "a|b\u{1}c — “quoted” 🎧")
+
+        let ad = SpotifyPlaybackSnapshot(notification: broadcast(id: "spotify:ad:xyz", name: "Some Ad"))
+        assert(ad?.isAd == true && ad?.title == "Advertisement" && ad?.permits(.next) == false)
+    }
+
+    // MARK: Errors
+
+    @MainActor static func checkErrorMapping() throws {
+        assert(SpotifyBridgeError(status: -1743) == .permissionDenied)
+        assert(SpotifyBridgeError(status: -600) == .notRunning)
+        assert(SpotifyBridgeError(status: -609) == .notRunning)
+        assert(SpotifyBridgeError(status: -1712) == .timedOut)
+        assert(SpotifyBridgeError(status: -1728) == .nothingPlaying)
+        assert(SpotifyBridgeError(status: -1701) == .failed(-1701))
+        assert(SpotifyBridgeError.notRunning.localizedDescription.contains("Spotify"))
+    }
+
+    // MARK: Controller
+
+    @MainActor static func checkInitialReadAndCommands() async throws {
+        let source = TestSource()
+        source.next = .success(sample())
+        let playback = playback(source)
+        defer { playback.stop() }
+
+        // Nothing has broadcast yet, so the opening state comes from one Apple Event read.
+        try await waitUntil { playback.state == .playing }
+        assert(playback.title == "Track" && playback.duration == 200)
+        assert(source.reads >= 1)
+
+        // Commands serialize: one in flight at a time, duplicates while busy ignored.
+        source.next = .success(sample(playing: false))
+        playback.send(.pause)
+        playback.send(.pause)
+        playback.send(.next)
+        try await waitUntil { !playback.busy }
+        assert(source.sent == [.pause], "A second command while one is in flight should be dropped")
+        assert(source.maximumActive == 1, "Reads and commands must not overlap")
+        try await waitUntil { playback.state == .paused }
+
+        // A read that started before a command must not overwrite what the command produced.
+        source.holdNext = true
+        playback.boost(for: 0.05)
+        try await waitUntil { source.held != nil }
+        playback.send(.play)
+        source.release(.success(sample(id: "spotify:track:stale", playing: false)))
+        try await waitUntil { !playback.busy }
+        assert(playback.identity != "spotify:track:stale", "A stale read should be discarded")
+    }
+
+    @MainActor static func checkNotificationDrivesUpdates() async throws {
+        let source = TestSource()
+        source.next = .success(nil)
+        let playback = playback(source, pollInterval: 30, idlePollInterval: 30)
+        defer { playback.stop() }
+        try await waitUntil { playback.state == .idle }
+        let readsBefore = source.reads
+
+        // A broadcast alone should move the whole widget, with no Apple Event read.
+        playback.receive(notification: broadcast())
+        assert(playback.state == .playing)
+        assert(playback.title == "Juno" && playback.artist == "Sabrina Carpenter")
+        assert(abs(playback.duration - 223.192) < 0.001)
+        assert(abs(playback.elapsed - 126.39) < 0.001)
+        assert(source.reads == readsBefore, "A broadcast must not trigger a snapshot read")
+
+        playback.receive(notification: broadcast(state: "Paused", position: 130))
+        assert(playback.state == .paused && !playback.isPlaying)
+
+        playback.receive(notification: broadcast(state: "Stopped"))
+        assert(playback.state == .idle && playback.snapshot?.isLoaded == false)
+
+        // A payload with no player state is ignored rather than clearing the card.
+        playback.receive(notification: broadcast())
+        let before = playback.identity
+        playback.receive(notification: ["Name": "nonsense"])
+        assert(playback.identity == before)
+    }
+
+    @MainActor static func checkArtworkFetchedOncePerTrack() async throws {
+        let source = TestSource()
+        let images = HeldArtwork()
+        source.next = .success(nil)
+        source.artwork = .success(URL(string: "https://i.scdn.co/image/one")!)
+        let playback = playback(source, images: images, pollInterval: 30, idlePollInterval: 30)
+        defer { playback.stop() }
+        try await waitUntil { playback.state == .idle }
+
+        // First broadcast for a track: one artwork lookup, the one Apple Event normal use makes.
+        playback.receive(notification: broadcast())
+        try await waitUntil { source.artworkReads == 1 }
+        try await waitUntil { playback.artworkKey == "https://i.scdn.co/image/one" }
+
+        // Repeat broadcasts for the same track (pause, resume, seek) must not look it up again.
+        playback.receive(notification: broadcast(state: "Paused"))
+        playback.receive(notification: broadcast(position: 130))
+        try await Task.sleep(for: .milliseconds(80))
+        assert(source.artworkReads == 1, "Artwork should be fetched once per track, not per broadcast")
+
+        // A new track fetches again.
+        source.artwork = .success(URL(string: "https://i.scdn.co/image/two")!)
+        playback.receive(notification: broadcast(id: "spotify:track:two", name: "Espresso"))
+        try await waitUntil { source.artworkReads == 2 }
+        try await waitUntil { playback.artworkKey == "https://i.scdn.co/image/two" }
+
+        // Has Artwork = 0 clears the slot without a lookup.
+        playback.receive(notification: broadcast(id: "spotify:track:three", artwork: 0))
+        try await waitUntil { playback.artworkKey == "idle" }
+        assert(source.artworkReads == 2, "No artwork means no lookup")
+
+        // The displayed image trails the key until the replacement decodes.
+        assert(playback.loadedArtworkKey == "idle")
+    }
+
+    @MainActor static func checkSeekRollback() async throws {
+        let source = TestSource()
+        source.next = .success(sample(position: 10))
+        let playback = playback(source, pollInterval: 30, idlePollInterval: 30)
         defer { playback.stop() }
         try await waitUntil { playback.state == .playing }
-        assert(playback.title == "Track one" && playback.permits(.pause))
-        api.holdNext = true
-        try await waitUntil { api.held != nil }
-        playback.send(.seek(80))
-        playback.send(.next) // Ignored while a command is pending.
-        assert(playback.elapsed >= 80 && playback.busy && api.sent.isEmpty)
-        // Buttons stay lit while a command is in flight, even though another one can't be sent yet.
-        assert(playback.offers(.next) && !playback.permits(.next))
-        api.next = .success(try sample(80))
-        api.release(.success(try sample(2))) // Predates the seek and must be discarded.
+
+        // A seek previews locally straight away, so the scrubber follows the thumb.
+        source.commandFailure = SpotifyBridgeError.timedOut
+        playback.send(.seek(120))
+        assert(abs(playback.elapsed - 120) < 0.001)
+        // When the command fails the preview rolls back rather than lying.
         try await waitUntil { !playback.busy }
-        assert(api.sent == [.seek(80)] && playback.elapsed >= 80 && api.maximumActive == 1)
-        api.commandFailure = URLError(.notConnectedToInternet)
-        let prior = playback.elapsed
-        playback.send(.seek(150))
-        try await waitUntil { !playback.busy }
-        assert(playback.elapsed < 150 && abs(playback.elapsed - prior) < 1 && playback.state == .commandError)
-        api.commandFailure = nil
-        playback.setSuspended(true)
-        let frozen = playback.elapsed, polls = api.polls
-        try await Task.sleep(for: .milliseconds(120))
-        assert(playback.elapsed == frozen && api.polls == polls && !playback.isPlaying)
-        playback.setSuspended(false)
-        // Backoff remains respected through sleep/wake.
+        assert(abs(playback.elapsed - 10) < 1, "A failed seek should roll back")
+        assert(playback.state == .commandError)
+
+        // A seek past the end is clamped to the track length before being sent.
+        source.commandFailure = nil
+        playback.retry()
         try await waitUntil { playback.state == .playing }
+        playback.send(.seek(9999))
+        try await waitUntil { !playback.busy }
+        assert(source.sent.contains(.seek(200)), "Seek should clamp to the duration")
+    }
+
+    @MainActor static func checkFailureStates() async throws {
+        // Spotify closed.
+        let closed = TestSource()
+        closed.next = .failure(SpotifyBridgeError.notRunning)
+        let first = playback(closed)
+        try await waitUntil { first.state == .notRunning }
+        assert(first.needsAttention && first.snapshot == nil && first.artworkKey == "idle")
+        assert(!first.offers(.play))
+        first.stop()
+
+        // Permission refused: a state the user has to resolve, so it does not retry in a tight loop.
+        let denied = TestSource()
+        denied.next = .failure(SpotifyBridgeError.permissionDenied)
+        let second = playback(denied)
+        try await waitUntil { second.state == .permissionDenied || second.state == .permissionNeeded }
+        assert(second.needsAttention)
+        assert(second.message?.isEmpty == false)
+        let reads = denied.reads
+        try await Task.sleep(for: .milliseconds(150))
+        assert(denied.reads == reads, "A refusal should not be retried on the poll interval")
+        second.stop()
+
+        // Nothing loaded in a running Spotify.
+        let empty = TestSource()
+        empty.next = .failure(SpotifyBridgeError.nothingPlaying)
+        let third = playback(empty)
+        try await waitUntil { third.state == .idle }
+        assert(!third.needsAttention)
+        third.stop()
+
+        // A transient failure backs off but keeps trying, and recovers on its own.
+        let flaky = TestSource()
+        flaky.next = .failure(SpotifyBridgeError.timedOut)
+        let fourth = playback(flaky)
+        defer { fourth.stop() }
+        try await waitUntil { fourth.state == .offline }
+        flaky.next = .success(sample())
+        fourth.retry()
+        try await waitUntil { fourth.state == .playing }
+    }
+
+    @MainActor static func checkPreviewAndSuspend() async throws {
+        let source = TestSource()
+        source.next = .success(sample())
+        let playback = playback(source)
+        defer { playback.stop() }
+        try await waitUntil { playback.state == .playing }
+
+        // Preview owns the card: live reading stops and the live snapshot is dropped.
         playback.setPreviewing(true)
-        let previewPolls = api.polls
+        try await Task.sleep(for: .milliseconds(60))
+        let duringPreview = source.reads
         try await Task.sleep(for: .milliseconds(120))
-        assert(api.polls == previewPolls && !playback.permits(.next))
+        assert(source.reads == duringPreview, "Preview must generate no Spotify traffic")
+        assert(playback.snapshot == nil && !playback.offers(.play))
+        // A broadcast arriving during preview is ignored rather than fighting the sample data.
+        playback.receive(notification: broadcast())
+        assert(playback.snapshot == nil)
+
         playback.setPreviewing(false)
         try await waitUntil { playback.state == .playing }
-        api.next = .failure(SpotifyPlaybackError.quotaExceeded)
-        try await waitUntil { playback.state == .quotaExceeded }
-        let quotaPolls = api.polls
-        try await Task.sleep(for: .milliseconds(180))
-        assert(api.polls == quotaPolls && !playback.permits(.next))
-        api.next = .success(nil); playback.retry()
-        try await waitUntil { playback.state == .idle }
-        assert(playback.title == "Nothing playing" && playback.duration == 0)
-        api.next = .success(try sample())
-        try await waitUntil { playback.state == .playing }
-        api.holdNext = true
-        try await waitUntil { api.held != nil }
-        auth.hasSession = false
-        api.release(.success(try sample(30, id: "late")))
+
+        // Sleep and lock suspend the same way.
+        playback.setSuspended(true)
         try await Task.sleep(for: .milliseconds(60))
-        assert(playback.state == .disconnected && playback.snapshot == nil && playback.artwork == nil)
-    }
-    @MainActor static func checkArtwork() async throws {
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 600, pixelsHigh: 600, bitsPerSample: 8,
-            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        let png = bitmap.representation(using: .png, properties: [:])!
-        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PlaybackHTTPStub.self]
-        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let cache = SpotifyArtworkCache(capacity: 2, session: session)
-        PlaybackHTTPStub.reset(Array(repeating: .init(status: 200, data: png), count: 4))
-        let a = URL(string: "https://example.com/a")!, b = URL(string: "https://example.com/b")!, c = URL(string: "https://example.com/c")!
-        let image = try await cache.image(for: a)
-        assert(image.width == 300 && image.height == 300)
-        _ = try await cache.image(for: b); _ = try await cache.image(for: a)
-        assert(PlaybackHTTPStub.requests.count == 2)
-        _ = try await cache.image(for: c); _ = try await cache.image(for: b)
-        let count = await cache.cachedCount
-        assert(count == 2 && PlaybackHTTPStub.requests.count == 4)
-    }
-    @MainActor static func checkProgressAndStaleArtwork() async throws {
-        let auth = PlaybackTestSession(), api = PlaybackTestAPI()
-        api.next = .success(try sample(199.8))
-        let playback = SpotifyPlayback(auth: auth, api: api, images: EmptyArtwork(), pollInterval: 10)
+        let duringSleep = source.reads
+        try await Task.sleep(for: .milliseconds(120))
+        assert(source.reads == duringSleep, "Nothing should be read while nobody can see the widget")
+        playback.setSuspended(false)
         try await waitUntil { playback.state == .playing }
-        try await Task.sleep(for: .milliseconds(350))
-        assert(playback.elapsed == 200) // Local time clamps; never sends an automatic skip.
-        assert(api.sent.isEmpty)
-        api.next = .success(try sample(50, playing: false)); playback.retry()
-        try await waitUntil { playback.state == .paused }
-        let paused = playback.elapsed
-        try await Task.sleep(for: .milliseconds(350))
-        assert(playback.elapsed == paused)
-        api.next = .failure(SpotifyPlaybackError.rateLimited(1)); playback.retry()
-        try await waitUntil { playback.state == .rateLimited }
-        let before = api.polls
-        playback.retry(); playback.send(.next)
-        try await Task.sleep(for: .milliseconds(250))
-        assert(api.polls == before && api.sent.isEmpty)
+
+        // Stopping is final.
         playback.stop()
-
-        let artAuth = PlaybackTestSession(), artAPI = PlaybackTestAPI(), images = HeldArtwork()
-        let firstURL = URL(string: "https://example.com/first")!, secondURL = URL(string: "https://example.com/second")!
-        artAPI.next = .success(try sample(10, artwork: firstURL.absoluteString))
-        let artPlayback = SpotifyPlayback(auth: artAuth, api: artAPI, images: images, pollInterval: 0.05)
-        defer { artPlayback.stop() }
-        try await waitUntil { images.pending[firstURL] != nil }
-        artAPI.next = .success(try sample(20, id: "two", artwork: secondURL.absoluteString))
-        try await waitUntil { images.pending[secondURL] != nil }
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 10, pixelsHigh: 10, bitsPerSample: 8,
-            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        images.complete(firstURL, image: bitmap.cgImage!) // Deliberately ignores cancellation.
-        try await Task.sleep(for: .milliseconds(20))
-        assert(artPlayback.artwork == nil && artPlayback.artworkKey == secondURL.absoluteString)
-        images.complete(secondURL, image: bitmap.cgImage!)
-        try await waitUntil { artPlayback.artwork != nil }
-        assert(artPlayback.title == "Track two")
-        let previousArtwork = artPlayback.artwork
-        artAPI.next = .success(try sample(30, id: "three", artwork: firstURL.absoluteString))
-        try await waitUntil { images.pending[firstURL] != nil }
-        assert(artPlayback.artwork === previousArtwork) // Keep the cover throughout a slow download.
-        // Ink follows the cover on screen, so its key stays on the old image until the new one arrives.
-        assert(artPlayback.loadedArtworkKey == secondURL.absoluteString)
-        try await Task.sleep(for: .milliseconds(120)) // Repeated polls must not restart the request.
-        assert(artPlayback.artwork === previousArtwork)
-        images.complete(firstURL, image: bitmap.cgImage!)
-        try await waitUntil { artPlayback.artwork !== previousArtwork }
-        assert(artPlayback.artwork != nil && artPlayback.artworkKey == firstURL.absoluteString)
-        assert(artPlayback.loadedArtworkKey == firstURL.absoluteString)
-        artAPI.next = .success(try sample(40, id: "no-art"))
-        try await waitUntil { artPlayback.artworkKey == "idle" }
-        assert(artPlayback.artwork == nil) // Truly missing artwork still clears the cover.
-        artAuth.hasSession = false
-        assert(artPlayback.artwork == nil && artPlayback.snapshot == nil)
+        let afterStop = source.reads
+        try await Task.sleep(for: .milliseconds(120))
+        assert(source.reads == afterStop)
     }
-    @MainActor static func checkPersistedRateLimit() async throws {
-        let suite = "squidd-playback-checks-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let auth = PlaybackTestSession(), api = PlaybackTestAPI()
-        api.next = .failure(SpotifyPlaybackError.rateLimited(60))
-        let first = SpotifyPlayback(auth: auth, api: api, images: EmptyArtwork(), pollInterval: 0.05, defaults: defaults)
-        try await waitUntil { first.state == .rateLimited }
-        assert(first.artist.contains("Retrying at"))
-        first.stop()
-        // A relaunch during the wait must not contact Spotify again.
-        let polls = api.polls
-        let relaunched = SpotifyPlayback(auth: auth, api: api, images: EmptyArtwork(), pollInterval: 0.05, defaults: defaults)
-        try await Task.sleep(for: .milliseconds(150))
-        assert(api.polls == polls && relaunched.state == .rateLimited && relaunched.artist.contains("Retrying at"))
-        relaunched.stop()
-        // Once the wait has passed, a successful poll clears the saved deadline.
-        defaults.set(Date().addingTimeInterval(-1), forKey: "spotifyPlaybackRetryAt")
-        api.next = .success(try sample())
-        let recovered = SpotifyPlayback(auth: auth, api: api, images: EmptyArtwork(), pollInterval: 0.05, defaults: defaults)
-        defer { recovered.stop() }
-        try await waitUntil { recovered.state == .playing }
-        assert(defaults.object(forKey: "spotifyPlaybackRetryAt") == nil)
-    }
-    @MainActor static func checkPollPacing() async throws {
-        let auth = PlaybackTestSession(), api = PlaybackTestAPI()
-        let playback = SpotifyPlayback(auth: auth, api: api, images: EmptyArtwork(), pollInterval: 0.05,
-                                       idlePollInterval: 0.05, emptyPollInterval: 30, backgroundPollInterval: 30,
-                                       backgroundIdlePollInterval: 30, boostInterval: 0.05)
-        defer { playback.stop() }
-        // Nothing loaded: the slow empty rate applies even though paused tracks poll quickly.
-        try await waitUntil { playback.state == .idle }
-        var polls = api.polls
-        try await Task.sleep(for: .milliseconds(200))
-        assert(api.polls == polls)
-        // A boost interrupts the long wait, and a playing track then keeps the quick foreground rate.
-        api.next = .success(try sample())
-        playback.boost(for: 0.05)
-        try await waitUntil { playback.state == .playing }
-        polls = api.polls
-        try await waitUntil { api.polls >= polls + 3 }
-        // Card hidden: the in-progress short wait finishes, then polling drops to the background rate.
-        playback.setBackground(true)
-        try await Task.sleep(for: .milliseconds(150))
-        polls = api.polls
-        try await Task.sleep(for: .milliseconds(200))
-        assert(api.polls == polls && playback.state == .playing)
-        // Card shown again: the boost that accompanies it resumes quick polling.
-        playback.setBackground(false)
-        playback.boost(for: 0.05)
-        try await waitUntil { api.polls >= polls + 3 }
-    }
-
 }

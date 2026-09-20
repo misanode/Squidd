@@ -1,9 +1,17 @@
 import Foundation
 
+/// A Spotify that is never running, so these checks measure the store's own behavior rather than whatever happens
+/// to be playing on the machine running them.
+struct ClosedSpotify: NowPlayingSource {
+    func snapshot() async throws -> SpotifyPlaybackSnapshot? { throw SpotifyBridgeError.notRunning }
+    func artworkURL() async throws -> URL? { throw SpotifyBridgeError.notRunning }
+    func send(_ command: PlaybackCommand) async throws { throw SpotifyBridgeError.notRunning }
+}
+
 @main
 enum PlaybackStateChecks {
     @MainActor static func main() async throws {
-        let store = AppStore()
+        let store = AppStore(source: ClosedSpotify(), observeNotifications: false)
         assert(!store.canControl && !store.isPlaying)
         store.seek(to: 100)
         assert(store.elapsed == 0)
@@ -35,6 +43,6 @@ enum PlaybackStateChecks {
         try await Task.sleep(for: .milliseconds(350))
         assert(store.elapsed == 0 && !store.canControl && store.shownDuration == 0)
         store.stop()
-        print("Playback state checks passed: disconnected guard, progress tick, pause, seek bounds, track changes, sleep/wake, and preview shutdown.")
+        print("Playback state checks passed: closed-Spotify guard, progress tick, pause, seek bounds, track changes, sleep/wake, and preview shutdown.")
     }
 }
