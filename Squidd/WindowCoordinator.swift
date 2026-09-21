@@ -207,9 +207,16 @@ final class WindowCoordinator: NSObject {
 
     func resetPosition() {
         guard let screen = NSScreen.main else { return }
+        let visible = screen.visibleFrame
         var frame = card.frame
-        frame.origin = CGPoint(x: screen.visibleFrame.midX - frame.width / 2,
-                               y: screen.visibleFrame.midY - (frame.height + WidgetGeometry.launcherAllowance) / 2)
+        if let position = defaults.array(forKey: "defaultPosition") as? [Double], position.count == 2,
+           position.allSatisfy({ $0.isFinite && (0...1).contains($0) }) {
+            frame.origin = CGPoint(x: visible.minX + position[0] * visible.width - frame.width / 2,
+                                   y: visible.minY + position[1] * visible.height - frame.height / 2)
+        } else {
+            frame.origin = CGPoint(x: visible.midX - frame.width / 2,
+                                   y: visible.midY - (frame.height + WidgetGeometry.launcherAllowance) / 2)
+        }
         place(frame, screen: screen)
     }
 
@@ -218,12 +225,20 @@ final class WindowCoordinator: NSObject {
         let panel = NSSavePanel()
         panel.directoryURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         panel.nameFieldStringValue = "AppearanceDefaults.plist"
-        panel.message = "Save into the Squidd source folder. The next build starts fresh installs with this look."
+        panel.message = "Saves the look, card position and Settings size. Press ▶ in Xcode to rebuild before resetting to first launch."
         NSApp.activate()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let data = try PropertyListSerialization.data(fromPropertyList: store.appearanceSnapshot,
-                                                          format: .xml, options: 0)
+            var snapshot = store.appearanceSnapshot
+            if let settings {
+                snapshot["settingsDefaultSize"] = [settings.frame.width, settings.frame.height]
+            }
+            if let screen = bestScreen(for: card.frame) {
+                let visible = screen.visibleFrame
+                snapshot["defaultPosition"] = [(card.frame.midX - visible.minX) / visible.width,
+                                               (card.frame.midY - visible.minY) / visible.height]
+            }
+            let data = try PropertyListSerialization.data(fromPropertyList: snapshot, format: .xml, options: 0)
             try data.write(to: url, options: .atomic)
         } catch {
             NSAlert(error: error).runModal()
@@ -411,18 +426,25 @@ final class WindowCoordinator: NSObject {
             let host = NSHostingView(rootView: SettingsView(store: store, actions: actions))
             host.sizingOptions = []
             window.contentView = host
-            if !window.setFrameUsingName("SquiddSettingsWindow") { window.center() }
-            window.setFrameAutosaveName("SquiddSettingsWindow")
-            let saved = window.frame, minimum = SettingsView.minimumSize
-            if saved.width < minimum.width || saved.height < minimum.height {
-                let size = NSSize(width: max(saved.width, minimum.width), height: max(saved.height, minimum.height))
-                window.setFrame(NSRect(x: saved.minX, y: saved.maxY - size.height, width: size.width, height: size.height), display: false)
-            }
+            window.setFrame(settingsFrameBesidePlayer(size: settingsDefaultSize), display: false)
             settings = window
         }
         store.loginStatus = SMAppService.mainApp.status
         NSApp.activate(ignoringOtherApps: true)
         settings?.makeKeyAndOrderFront(nil)
+    }
+
+    private func settingsFrameBesidePlayer(size: CGSize) -> CGRect {
+        let gap: CGFloat = 16
+        let widget = card.frame.union(launcher.frame)
+        guard let visible = bestScreen(for: card.frame)?.visibleFrame else {
+            return CGRect(origin: .zero, size: size)
+        }
+        var x = widget.maxX + gap
+        if x + size.width > visible.maxX { x = widget.minX - gap - size.width }
+        x = min(max(visible.minX, x), visible.maxX - size.width)
+        let y = min(max(visible.minY, widget.maxY - size.height), visible.maxY - size.height)
+        return CGRect(x: x, y: y, width: size.width, height: size.height)
     }
 
     private var settingsDefaultSize: CGSize {

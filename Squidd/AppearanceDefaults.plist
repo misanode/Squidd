@@ -2,13 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>defaultPosition</key>
+	<array>
+		<real>0.49942129629629628</real>
+		<real>0.84501845018450183</real>
+	</array>
 	<key>showCardOutline</key>
 	<false/>
 	<key>showMascot</key>
-	<false/>
+	<true/>
 	<key>showMusicNotes</key>
-	<false/>
+	<true/>
 	<key>showPillArtwork</key>
-	<false/>
+	<true/>
 </dict>
 </plist>

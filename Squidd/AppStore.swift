@@ -94,7 +94,7 @@ final class AppStore {
 
     static let launchDefaultKeys: Set<String> = [
         "rimAccentHex", "showCardOutline", "logoPrimaryHex", "logoHighlightHex", "logoCircleHex",
-        "showPillArtwork", "showMascot", "showMusicNotes",
+        "showPillArtwork", "showMascot", "showMusicNotes", "defaultPosition", "settingsDefaultSize",
     ]
 
     var appearanceSnapshot: [String: Any] {
