@@ -35,7 +35,7 @@ extension Color {
 
 @MainActor @Observable
 final class AppStore {
-    let playback: SpotifyPlayback
+    let playback: Playback
     var preview: PreviewState = .off
     /// The launcher keeps showing artwork and play state while the card is hidden, so polling slows rather than stops.
     var cardVisible = true { didSet { playback.setBackground(!cardVisible) } }
@@ -71,14 +71,20 @@ final class AppStore {
     private var lastTick = ProcessInfo.processInfo.systemUptime
 
     /// `source` and `observeNotifications` exist for the checks, so they can exercise the store without touching
-    /// whatever Spotify happens to be running on the machine.
+    /// whatever music app happens to be running on the machine.
     init(defaults: UserDefaults = .standard, source: (any NowPlayingSource)? = nil,
          observeNotifications: Bool = true) {
         self.defaults = defaults
-        // Spotify broadcasts every state change, so these are only a safety net for a notification that never
+        // What a fresh install looks like, when the bundle carries a saved look. Registered defaults sit under
+        // anything the user has set, so this only fills in settings they never touched.
+        if let url = Bundle.main.url(forResource: "AppearanceDefaults", withExtension: "plist"),
+           let shipped = NSDictionary(contentsOf: url) as? [String: Any] {
+            defaults.register(defaults: shipped.filter { Self.launchDefaultKeys.contains($0.key) })
+        }
+        // Both apps broadcast every state change, so these are only a safety net for a notification that never
         // arrives: 15s while playing, 30s otherwise, 60s while the card is hidden. Squidd still reads quickly for a
-        // moment after Spotify launches or activates, the card opens, or the screen comes back.
-        playback = SpotifyPlayback(source: source, pollInterval: 15, idlePollInterval: 30,
+        // moment after a music app launches or activates, the card opens, or the screen comes back.
+        playback = Playback(source: source, pollInterval: 15, idlePollInterval: 30,
                                    backgroundPollInterval: 60, boostInterval: 2,
                                    observeNotifications: observeNotifications)
         inkChoices = defaults.dictionary(forKey: "inkOverrides") as? [String: String] ?? [:]
@@ -95,6 +101,25 @@ final class AppStore {
         showPillArtwork = defaults.object(forKey: "showPillArtwork") as? Bool ?? true
         showMascot = defaults.object(forKey: "showMascot") as? Bool ?? true
         showMusicNotes = defaults.object(forKey: "showMusicNotes") as? Bool ?? true
+    }
+
+    /// The appearance settings `AppearanceDefaults.plist` can ship. Left out on purpose: Light/Dark, which a fresh
+    /// install settles from macOS; the custom mascot, a file on the developer's Mac; and ink choices, which are
+    /// per-artwork.
+    static let launchDefaultKeys: Set<String> = [
+        "rimAccentHex", "showCardOutline", "logoPrimaryHex", "logoHighlightHex", "logoCircleHex",
+        "showPillArtwork", "showMascot", "showMusicNotes",
+    ]
+
+    /// The current look, keyed for `AppearanceDefaults.plist`. Colors still on their built-in value are left out,
+    /// so they stay built-in.
+    var appearanceSnapshot: [String: Any] {
+        let values: [String: Any?] = [
+            "rimAccentHex": rimAccentHex, "showCardOutline": showCardOutline,
+            "logoPrimaryHex": logoPrimaryHex, "logoHighlightHex": logoHighlightHex, "logoCircleHex": logoCircleHex,
+            "showPillArtwork": showPillArtwork, "showMascot": showMascot, "showMusicNotes": showMusicNotes,
+        ]
+        return values.compactMapValues { $0 }
     }
 
     func setSuspended(_ value: Bool) { playback.setSuspended(value) }
@@ -223,11 +248,8 @@ final class AppStore {
         guard canControl else { return }; previewElapsed = max(0, min(seconds, duration))
     }
 
-    func openSpotify() {
-        if !NSWorkspace.shared.open(URL(string: "spotify:")!) {
-            NSWorkspace.shared.open(URL(string: "https://open.spotify.com")!)
-        }
-    }
+    /// Opens the app the card follows.
+    func openPlayer() { playback.app.open() }
 
     func reconcileClock() {
         tick?.cancel()

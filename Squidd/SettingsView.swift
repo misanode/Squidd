@@ -61,7 +61,7 @@ struct SettingsView: View {
     init(store: AppStore, actions: SettingsActions = SettingsActions()) {
         _store = Bindable(store)
         self.actions = actions
-        // Settings opens by itself when Spotify needs attention, so start on the tab that fixes that.
+        // Settings opens by itself when a music app needs attention, so start on the tab that fixes that.
         _tab = State(initialValue: store.playback.needsAttention ? .music : .general)
     }
 
@@ -243,69 +243,74 @@ struct SettingsView: View {
 
     // MARK: Music
 
-    /// Squidd reads the Spotify app running on this Mac over Apple Events, so there is nothing to set up beyond
-    /// letting macOS allow it. The rows reflect the two things that can be wrong: Spotify closed, or permission
-    /// not granted.
+    /// Squidd reads Spotify or Apple Music on this Mac over Apple Events, so there is nothing to set up beyond
+    /// letting macOS allow it. The first row follows whichever app the card shows and offers the one fix it needs;
+    /// the toggles below show permission for each app, since macOS asks about each separately.
     private var music: some View {
         page(bottom: 33) {
-            header("Spotify").gap(50)
-            row("music-spotify", store.playback.status, spacing: 7) {
-                Button(spotifyActionTitle, action: fixSpotify)
+            header("Music").gap(50)
+            row(store.playback.app == .spotify ? "music-spotify" : "music-connected", store.playback.status,
+                spacing: 7) {
+                Button(actionTitle, action: { fix(store.playback.app) })
                     .buttonStyle(OutlineButtonStyle(width: 108.5))
-                    .disabled(spotifyAction == nil)
-                    .accessibilityIdentifier("spotifyConnectionAction")
+                    .disabled(action == nil)
+                    .accessibilityIdentifier("musicConnectionAction")
             }
             .gap(17.5)
             if let note = store.playback.message { self.note(note).gap(27) }
-            row("music-connected", "Squidd can control Spotify", spacing: 3.5) {
-                Toggle("Squidd can control Spotify", isOn: automationAllowed).toggleStyle(SwitchStyle())
-                    .accessibilityIdentifier("spotifyAutomationStatus")
+            ForEach(MusicApp.allCases, id: \.self) { app in
+                row("music-connected", "Squidd can control \(app.name)", spacing: 3.5) {
+                    Toggle("Squidd can control \(app.name)", isOn: automationAllowed(app)).toggleStyle(SwitchStyle())
+                        .accessibilityIdentifier("\(app.rawValue)AutomationStatus")
+                }
+                .gap(app == MusicApp.allCases.last ? 30 : 17.5)
             }
-            .gap(30)
-            note("Squidd shows whatever is playing in the Spotify app on this Mac. Playing on another device won’t "
-                 + "appear here.")
+            note("Squidd shows whichever of Spotify or Apple Music last started playing on this Mac. Playing on "
+                 + "another device won’t appear here.")
             .gap(33.5)
         }
     }
 
-    private enum SpotifyAction { case openSpotify, requestPermission, openPrivacySettings }
+    private enum ConnectionAction { case openApp, requestPermission, openPrivacySettings }
 
-    private var spotifyAction: SpotifyAction? {
+    private var action: ConnectionAction? {
         switch store.playback.state {
-        case .notRunning: .openSpotify
+        case .notRunning: .openApp
         case .permissionNeeded: .requestPermission
         case .permissionDenied: .openPrivacySettings
         default: nil
         }
     }
 
-    private var spotifyActionTitle: String {
-        switch spotifyAction {
-        case .openSpotify: "Open Spotify"
+    private var actionTitle: String {
+        switch action {
+        case .openApp: "Open \(store.playback.app.name)"
         case .requestPermission: "Allow Access"
         case .openPrivacySettings: "Open Settings"
         case nil: "Connected"
         }
     }
 
-    private func fixSpotify() {
-        switch spotifyAction {
-        case .openSpotify: store.openSpotify()
+    /// Does whatever stands between Squidd and `app`: opening it, asking macOS, or sending the user to System
+    /// Settings once they have refused.
+    private func fix(_ app: MusicApp) {
+        switch Automation.permission(for: app) {
+        case .appNotRunning: app.open()
         // Asking shows the system prompt; the answer lands in the next reading either way.
-        case .requestPermission:
-            _ = SpotifyAutomation.permission(askIfNeeded: true)
+        case .notAsked:
+            _ = Automation.permission(for: app, askIfNeeded: true)
             store.playback.retry()
-        case .openPrivacySettings: SpotifyAutomation.openPrivacySettings()
-        case nil: break
+        case .denied: Automation.openPrivacySettings()
+        case .granted: break
         }
     }
 
-    /// Reflects the Automation permission. It can be turned on (which prompts, or sends the user to System Settings
-    /// once they have refused) but not off — only macOS can revoke it.
-    private var automationAllowed: Binding<Bool> {
-        Binding(get: { SpotifyAutomation.permission() == .granted }, set: { on in
-            guard on else { SpotifyAutomation.openPrivacySettings(); return }
-            fixSpotify()
+    /// Reflects one app's Automation permission. It can be turned on (which prompts, or sends the user to System
+    /// Settings once they have refused) but not off — only macOS can revoke it.
+    private func automationAllowed(_ app: MusicApp) -> Binding<Bool> {
+        Binding(get: { Automation.permission(for: app) == .granted }, set: { on in
+            guard on else { Automation.openPrivacySettings(); return }
+            fix(app)
         })
     }
 

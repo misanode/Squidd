@@ -3,9 +3,9 @@ import Foundation
 /// A Spotify that is never running, so these checks measure the store's own behavior rather than whatever happens
 /// to be playing on the machine running them.
 struct ClosedSpotify: NowPlayingSource {
-    func snapshot() async throws -> SpotifyPlaybackSnapshot? { throw SpotifyBridgeError.notRunning }
-    func artworkURL() async throws -> URL? { throw SpotifyBridgeError.notRunning }
-    func send(_ command: PlaybackCommand) async throws { throw SpotifyBridgeError.notRunning }
+    func snapshot() async throws -> NowPlayingSnapshot? { throw PlayerBridgeError.notRunning }
+    func artwork(for trackID: String) async throws -> ArtworkReference? { throw PlayerBridgeError.notRunning }
+    func send(_ command: PlaybackCommand) async throws { throw PlayerBridgeError.notRunning }
 }
 
 @main

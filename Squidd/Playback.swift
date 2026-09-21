@@ -1,8 +1,9 @@
 import AppKit
 import Observation
+import os
 
-enum SpotifyPlaybackState: Equatable {
-    /// Spotify isn't open. Squidd never opens it unasked, so this waits for the user.
+enum PlaybackState: Equatable {
+    /// No music app is open. Squidd never opens one unasked, so this waits for the user.
     case notRunning
     /// macOS hasn't been asked for Automation permission yet; asking shows the system prompt.
     case permissionNeeded
@@ -11,16 +12,20 @@ enum SpotifyPlaybackState: Equatable {
     case loading, idle, playing, paused, offline, commandError
 }
 
-/// Drives both panels from the Spotify app on this Mac.
+/// Drives both panels from the music app on this Mac — Spotify or Apple Music, whichever most recently started
+/// playing. The other app is ignored until it starts playing itself.
 ///
-/// Readings arrive two ways. Spotify broadcasts `PlaybackStateChanged` on every state change with the whole snapshot
-/// in its `userInfo` — free, instant, and how nearly every update arrives. Apple Events fill the two gaps: the
-/// artwork URL, which the notification omits, and the state at launch, before any notification has been sent. A slow
-/// poll runs underneath as a safety net, not as the data source.
+/// Readings arrive two ways. Each app broadcasts every state change with the track's details in its `userInfo` —
+/// free, instant, and how nearly every update arrives. Apple Events fill the gaps: the artwork, which neither
+/// broadcast includes, Apple Music's playback position, which its broadcast leaves out, and the state at launch,
+/// before any broadcast has been sent. A slow poll runs underneath as a safety net, not as the data source.
 @MainActor @Observable
-final class SpotifyPlayback {
-    private(set) var state: SpotifyPlaybackState = .loading
-    private(set) var snapshot: SpotifyPlaybackSnapshot?
+final class Playback {
+    private(set) var state: PlaybackState = .loading
+    /// The app the card follows. Switches when another app starts playing, or when this one quits while another is
+    /// open.
+    private(set) var app: MusicApp
+    private(set) var snapshot: NowPlayingSnapshot?
     private(set) var elapsed: Double = 0
     private(set) var isPlaying = false
     private(set) var artwork: NSImage?
@@ -30,8 +35,12 @@ final class SpotifyPlayback {
     private(set) var busy = false
     private(set) var message: String?
 
-    private let source: any NowPlayingSource
-    private let images: any SpotifyArtworkLoading
+    private let sources: [MusicApp: any NowPlayingSource]
+    /// Diagnostic trail of broadcasts and readings; `log stream --predicate 'subsystem == "com.squidd"'`.
+    private let log = Logger(subsystem: "com.squidd", category: "Playback")
+    private let isRunning: (MusicApp) -> Bool
+    private let isPermitted: (MusicApp) -> Bool
+    private let images: any ArtworkLoading
     private let pollInterval: Double
     private let idlePollInterval: Double
     private let backgroundPollInterval: Double
@@ -46,7 +55,7 @@ final class SpotifyPlayback {
     private var artworkRetryAt: Date?
     private var generation = UUID()
     private var revision = 0
-    private var pending: PlaybackCommand?
+    private var pending: (app: MusicApp, command: PlaybackCommand)?
     private var suspended = false
     private var previewing = false
     private var stopped = false
@@ -55,19 +64,33 @@ final class SpotifyPlayback {
     private var commandMessageUntil: Date?
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private var seekRollback: Double?
-    private var observer: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
     /// The track the current `artworkKey` was fetched for, so a repeated notification for the same track doesn't
-    /// spend an Apple Event re-fetching a URL that cannot have changed.
+    /// spend an Apple Event re-fetching artwork that cannot have changed.
     private var artworkTrackID: String?
 
     /// Notifications carry the state changes, so these rates only cover what a missed notification would strand:
     /// `pollInterval` while a track plays, `idlePollInterval` while paused or idle, and `backgroundPollInterval`
     /// while only the launcher shows. `boostInterval` is the quick rate used briefly after `boost()`.
-    init(source: (any NowPlayingSource)? = nil, images: (any SpotifyArtworkLoading)? = nil,
+    ///
+    /// `source` stands in for Spotify alone and `sources` for any set of apps, both for the checks; with neither,
+    /// Squidd follows the real Spotify and Apple Music. `isRunning` and `isPermitted` let the checks decide which
+    /// apps are open and allowed, rather than whatever this Mac happens to say.
+    init(source: (any NowPlayingSource)? = nil, sources: [MusicApp: any NowPlayingSource]? = nil,
+         isRunning: @escaping (MusicApp) -> Bool = { $0.isRunning },
+         isPermitted: @escaping (MusicApp) -> Bool = { Automation.permission(for: $0) == .granted },
+         images: (any ArtworkLoading)? = nil,
          pollInterval: Double = 15, idlePollInterval: Double? = nil, backgroundPollInterval: Double? = nil,
          boostInterval: Double = 2, reconciliationDelay: Double = 0.4, observeNotifications: Bool = true) {
-        self.source = source ?? SpotifyEventBridge()
-        self.images = images ?? SpotifyArtworkCache()
+        let sources = sources ?? source.map { [.spotify: $0] }
+            ?? [.spotify: SpotifyEventBridge(), .music: AppleMusicEventBridge()]
+        self.sources = sources
+        self.isRunning = isRunning
+        self.isPermitted = isPermitted
+        let apps = MusicApp.allCases.filter { sources[$0] != nil }
+        // Start on whichever app is open; the first reading switches to the other if that one is playing instead.
+        app = (apps.count > 1 ? apps.first(where: isRunning) : nil) ?? apps.first ?? .spotify
+        self.images = images ?? ArtworkCache()
         self.pollInterval = max(0.05, pollInterval)
         self.idlePollInterval = max(0.05, idlePollInterval ?? pollInterval * 2)
         self.backgroundPollInterval = max(0.05, backgroundPollInterval ?? self.idlePollInterval * 2)
@@ -87,23 +110,23 @@ final class SpotifyPlayback {
     }
     var status: String {
         switch state {
-        case .notRunning: "Spotify isn’t running"
-        case .permissionNeeded: "Allow Squidd to control Spotify"
-        case .permissionDenied: "Squidd isn’t allowed to control Spotify"
-        case .loading: "Checking Spotify…"
-        case .idle: "Open Spotify to start listening"
-        case .playing: "Playing on Spotify"
-        case .paused: "Paused on Spotify"
-        case .offline: "Spotify isn’t responding · Retrying"
+        case .notRunning: sources.count > 1 ? "Open Spotify or Apple Music" : "\(app.name) isn’t running"
+        case .permissionNeeded: "Allow Squidd to control \(app.name)"
+        case .permissionDenied: "Squidd isn’t allowed to control \(app.name)"
+        case .loading: "Checking \(app.name)…"
+        case .idle: "Open \(app.name) to start listening"
+        case .playing: "Playing on \(app.name)"
+        case .paused: "Paused on \(app.name)"
+        case .offline: "\(app.name) isn’t responding · Retrying"
         case .commandError: "Playback command failed"
         }
     }
-    /// True once the situation is one the user can act on from Settings — opening Spotify or granting permission.
+    /// True once the situation is one the user can act on from Settings — opening an app or granting permission.
     var needsAttention: Bool { [.notRunning, .permissionNeeded, .permissionDenied].contains(state) }
     var canRetry: Bool { !busy && !suspended && !previewing && !stopped }
 
     /// Whether `command` is available at all, regardless of a command already on its way. Buttons use this, so
-    /// sending one doesn't dim the others for the moment Spotify takes to confirm it.
+    /// sending one doesn't dim the others for the moment the app takes to confirm it.
     func offers(_ command: PlaybackCommand) -> Bool {
         !suspended && !previewing && !stopped &&
         [.playing, .paused, .commandError].contains(state) && snapshot?.permits(command) == true
@@ -122,7 +145,7 @@ final class SpotifyPlayback {
             elapsed = target; lastTick = ProcessInfo.processInfo.systemUptime
         }
         revision += 1 // Any already-running read predates this user action.
-        pending = command; busy = true
+        pending = (app, command); busy = true
         message = nil; commandMessageUntil = nil
         sleeper?.cancel()
     }
@@ -151,7 +174,7 @@ final class SpotifyPlayback {
     }
 
     /// Reads once, soon, for moments when something is likely to have changed while Squidd wasn't listening:
-    /// Spotify launching, the card opening, or waking from sleep.
+    /// a music app launching, the card opening, or waking from sleep.
     func boost(for seconds: Double = 20) {
         guard enabled else { return }
         boostUntil = Date().addingTimeInterval(seconds)
@@ -160,29 +183,53 @@ final class SpotifyPlayback {
 
     func stop() {
         stopped = true
-        if let observer { DistributedNotificationCenter.default().removeObserver(observer); self.observer = nil }
+        observers.forEach(DistributedNotificationCenter.default().removeObserver)
+        observers = []
         cancelWork(clear: true)
     }
 
-    // MARK: Spotify's broadcast
+    // MARK: The apps' broadcasts
 
-    /// Spotify posts this on every play, pause, skip and seek, with the whole snapshot attached. The App Sandbox
-    /// does not strip the `userInfo`, so this is the primary source of readings and costs no Apple Event.
+    /// Each app posts its broadcast on every play, pause and skip, with the track attached. The App Sandbox does
+    /// not strip Spotify's `userInfo`, so this is the primary source of readings and costs no Apple Event.
     private func observePlaybackChanges() {
-        observer = DistributedNotificationCenter.default().addObserver(
-            forName: .init("com.spotify.client.PlaybackStateChanged"), object: nil, queue: .main
-        ) { [weak self] note in
-            MainActor.assumeIsolated {
-                guard let self, let userInfo = note.userInfo else { return }
-                self.receive(notification: userInfo)
-            }
+        for app in sources.keys {
+            observers.append(DistributedNotificationCenter.default().addObserver(
+                forName: app.broadcast, object: nil, queue: .main
+            ) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let userInfo = note.userInfo else { return }
+                    self.receive(notification: userInfo, from: app)
+                }
+            })
         }
     }
 
-    /// Applies one of Spotify's broadcasts. Separate from the observer so checks can drive it directly.
-    func receive(notification userInfo: [AnyHashable: Any]) {
-        guard let snapshot = SpotifyPlaybackSnapshot(notification: userInfo) else { return }
-        apply(snapshot, from: .notification)
+    /// Applies one app's broadcast. Separate from the observer so checks can drive it directly.
+    func receive(notification userInfo: [AnyHashable: Any], from sender: MusicApp = .spotify) {
+        guard enabled, sources[sender] != nil,
+              let snapshot = NowPlayingSnapshot(notification: userInfo, from: sender) else { return }
+        log.debug("""
+            \(sender.name, privacy: .public) broadcast: \(String(describing: snapshot.state), privacy: .public) \
+            \(snapshot.trackID, privacy: .public) “\(snapshot.name, privacy: .public)” (following \(self.app.name, privacy: .public))
+            """)
+        if sender != app {
+            // Another app starting to play takes the card over; its pauses and stops don't concern it.
+            guard snapshot.isPlaying else { return }
+            follow(sender)
+        }
+        apply(snapshot)
+        // Apple Music's broadcast has no position. Read it now rather than let the clock run from a guess.
+        if snapshot.positionSeconds == nil && snapshot.isLoaded { sleeper?.cancel() }
+    }
+
+    /// Moves the card to another app. What it shows is replaced by that app's next reading.
+    private func follow(_ next: MusicApp) {
+        guard next != app else { return }
+        app = next
+        revision += 1 // A read of the previous app still in flight no longer describes the card.
+        failures = 0; retryAt = nil
+        message = nil; commandMessageUntil = nil
     }
 
     // MARK: The loop
@@ -201,13 +248,13 @@ final class SpotifyPlayback {
                     continue
                 }
                 self.retryAt = nil
-                if let command = self.pending {
+                if let (app, command) = self.pending {
                     self.pending = nil
                     do {
-                        try await self.source.send(command)
+                        try await self.sources[app]?.send(command)
                         guard self.valid(current) else { return }
                         self.seekRollback = nil
-                        // Spotify reports the outgoing track for a moment after a skip, so settle before reading.
+                        // The app reports the outgoing track for a moment after a skip, so settle before reading.
                         try await Task.sleep(for: .seconds(self.reconciliationDelay))
                         guard self.valid(current) else { return }
                         await self.refresh(current)
@@ -247,26 +294,65 @@ final class SpotifyPlayback {
     /// One full reading over Apple Events. Costs ~80 ms off the main actor, so it runs at launch and as a safety
     /// net; the notification covers everything in between.
     private func refresh(_ current: UUID) async {
+        followRunningApp()
         let startedAtRevision = revision
+        let reading = app
         do {
-            let value = try await source.snapshot()
+            var value = try await sources[reading]?.snapshot()
+            log.debug("""
+                \(reading.name, privacy: .public) read: \(String(describing: value?.state), privacy: .public) \
+                \(value?.trackID ?? "-", privacy: .public) “\(value?.name ?? "", privacy: .public)”
+                """)
             guard valid(current), startedAtRevision == revision else { return }
+            // Nothing playing here: another app may have started without its broadcast reaching Squidd.
+            if value?.isPlaying != true, let (other, playing) = await playingElsewhere(than: reading) {
+                guard valid(current), startedAtRevision == revision else { return }
+                follow(other); value = playing
+            }
             failures = 0
-            if let value { apply(value, from: .appleEvent) } else { clearNowPlaying(.idle) }
+            if let value { apply(value) } else { clearNowPlaying(.idle) }
         } catch {
-            guard valid(current) else { return }
-            if startedAtRevision != revision { return }
+            log.debug("\(reading.name, privacy: .public) read failed: \(String(describing: error), privacy: .public)")
+            guard valid(current), startedAtRevision == revision else { return }
+            if let (other, playing) = await playingElsewhere(than: reading) {
+                guard valid(current), startedAtRevision == revision else { return }
+                follow(other); failures = 0
+                apply(playing)
+                return
+            }
             handle(error, command: false)
         }
     }
 
-    private enum Reading { case notification, appleEvent }
+    /// When the followed app has quit and another is open, follow that one instead of reporting nothing.
+    private func followRunningApp() {
+        guard sources.count > 1, !isRunning(app),
+              let open = MusicApp.allCases.first(where: { sources[$0] != nil && isRunning($0) }) else { return }
+        follow(open)
+    }
 
-    private func apply(_ value: SpotifyPlaybackSnapshot, from reading: Reading) {
+    /// Checks the other apps for playback. Only apps Squidd already has permission for: reading one it doesn't
+    /// would put up the Automation prompt for an app the user may not even be using. A broadcast covers those.
+    private func playingElsewhere(than excluded: MusicApp) async -> (MusicApp, NowPlayingSnapshot)? {
+        for other in MusicApp.allCases where other != excluded {
+            guard let source = sources[other], isRunning(other), isPermitted(other),
+                  let value = try? await source.snapshot(), value.isPlaying else { continue }
+            return (other, value)
+        }
+        return nil
+    }
+
+    private func apply(_ value: NowPlayingSnapshot) {
         guard enabled else { return }
         failures = 0
         retryAt = nil
         let previous = snapshot
+        var value = value
+        if value.positionSeconds == nil {
+            // Apple Music's broadcast: keep the clock on the same track, start from zero on a new one. The Apple
+            // Event read that follows corrects either.
+            value.positionSeconds = value.trackID == previous?.trackID ? elapsed : 0
+        }
         snapshot = value
         elapsed = value.elapsed
         isPlaying = value.isPlaying
@@ -275,44 +361,50 @@ final class SpotifyPlayback {
             message = nil; commandMessageUntil = nil
         }
         if value.isAd { message = "Advertisement · Controls unavailable" }
-        else if !value.isLoaded && value.isPlaying { message = "Spotify is playing · Metadata unavailable" }
+        else if !value.isLoaded && value.isPlaying { message = "\(app.name) is playing · Metadata unavailable" }
 
-        switch reading {
-        case .appleEvent:
-            // An Apple Event snapshot already carries the artwork URL.
+        if let url = value.artworkURL {
+            // A Spotify Apple Event reading already carries the artwork URL.
             artworkTrackID = value.trackID
-            updateArtwork(value.artworkURL)
-        case .notification:
-            // The notification omits the URL, so fetch one — but only when the track actually changed.
-            if value.trackID != previous?.trackID || artworkTrackID != value.trackID {
-                if value.hasArtwork { fetchArtworkURL(for: value.trackID) }
-                else { artworkTrackID = value.trackID; updateArtwork(nil) }
-            }
+            updateArtwork(.remote(url))
+        } else if artworkTrackID != value.trackID {
+            // Otherwise fetch it — but only when the track actually changed.
+            if value.hasArtwork { fetchArtwork(for: value.trackID) }
+            else { artworkTrackID = value.trackID; updateArtwork(nil) }
         }
         reconcileClock()
     }
 
     /// The single Apple Event a running Squidd makes in normal use: one per track change, ~8 ms, off the main actor.
-    private func fetchArtworkURL(for trackID: String) {
+    private func fetchArtwork(for trackID: String) {
         let current = generation
+        let reading = app
         Task { [weak self] in
             guard let self else { return }
-            let url = try? await self.source.artworkURL()
-            guard self.generation == current, self.enabled, self.snapshot?.trackID == trackID else { return }
+            // A failed lookup leaves `artworkTrackID` alone, so the next reading tries again. Only an answer — an
+            // image, or "this track has none" — settles it for the track.
+            let artwork: ArtworkReference?
+            do { artwork = try await self.sources[reading]?.artwork(for: trackID) } catch {
+                self.log.debug("\(reading.name, privacy: .public) artwork failed: \(String(describing: error), privacy: .public)")
+                return
+            }
+            self.log.debug("\(reading.name, privacy: .public) artwork: \(artwork?.key ?? "none", privacy: .public)")
+            guard self.generation == current, self.enabled, self.app == reading,
+                  self.snapshot?.trackID == trackID else { return }
             self.artworkTrackID = trackID
-            self.snapshot?.artworkURL = url
-            self.updateArtwork(url)
+            if case .remote(let url) = artwork { self.snapshot?.artworkURL = url }
+            self.updateArtwork(artwork)
         }
     }
 
-    private func noteSpotifyClosed() {
+    private func noteAppClosed() {
         clearNowPlaying(.notRunning)
         message = nil
-        // Nothing to poll for until Spotify comes back; WindowCoordinator boosts on launch.
+        // Nothing to poll for until an app comes back; WindowCoordinator boosts on launch.
         retryAt = Date().addingTimeInterval(max(2, idlePollInterval))
     }
 
-    private func clearNowPlaying(_ next: SpotifyPlaybackState) {
+    private func clearNowPlaying(_ next: PlaybackState) {
         snapshot = nil
         elapsed = 0
         isPlaying = false
@@ -327,16 +419,16 @@ final class SpotifyPlayback {
         failures = min(8, failures + 1)
         let backoff = min(60, pow(2, Double(failures)))
         switch error {
-        case SpotifyBridgeError.permissionDenied:
+        case PlayerBridgeError.permissionDenied:
             // Waiting doesn't fix a refusal; Settings offers the way to System Settings.
-            clearNowPlaying(SpotifyAutomation.permission() == .notAsked ? .permissionNeeded : .permissionDenied)
-            message = SpotifyBridgeError.permissionDenied.localizedDescription
+            clearNowPlaying(Automation.permission(for: app) == .notAsked ? .permissionNeeded : .permissionDenied)
+            message = PlayerBridgeError.permissionDenied.description(for: app)
             retryAt = Date().addingTimeInterval(30)
             return
-        case SpotifyBridgeError.notRunning:
-            noteSpotifyClosed()
+        case PlayerBridgeError.notRunning:
+            noteAppClosed()
             return
-        case SpotifyBridgeError.nothingPlaying:
+        case PlayerBridgeError.nothingPlaying:
             clearNowPlaying(.idle)
             return
         default:
@@ -344,8 +436,8 @@ final class SpotifyPlayback {
             retryAt = Date().addingTimeInterval(backoff)
         }
         if command { commandMessageUntil = Date().addingTimeInterval(6) }
-        if let known = error as? SpotifyBridgeError { message = known.localizedDescription }
-        else { message = command ? "Command failed. Try again." : "Lost contact with Spotify · Retrying" }
+        if let known = error as? PlayerBridgeError { message = known.description(for: app) }
+        else { message = command ? "Command failed. Try again." : "Lost contact with \(app.name) · Retrying" }
     }
 
     private func reconcileClock() {
@@ -363,14 +455,14 @@ final class SpotifyPlayback {
         }
     }
 
-    private func updateArtwork(_ url: URL?) {
-        let key = url?.absoluteString ?? "idle"
+    private func updateArtwork(_ artwork: ArtworkReference?) {
+        let key = artwork?.key ?? "idle"
         let changed = key != artworkKey
         guard changed || (loadedArtworkKey != key && artworkTask == nil && (artworkRetryAt == nil || artworkRetryAt! <= Date())) else { return }
         artworkTask?.cancel(); artworkTask = nil
         if changed { artworkRetryAt = nil }
         artworkKey = key
-        guard let url else { artwork = nil; loadedArtworkKey = "idle"; return }
+        guard let artwork else { self.artwork = nil; loadedArtworkKey = "idle"; return }
         guard enabled else { return }
         // Keep the displayed image until its replacement is decoded.
         let current = generation
@@ -380,7 +472,7 @@ final class SpotifyPlayback {
                 if !Task.isCancelled && self.generation == current && self.artworkKey == key { self.artworkTask = nil }
             }
             do {
-                let cgImage = try await self.images.image(for: url)
+                let cgImage = try await self.images.image(for: artwork)
                 guard !Task.isCancelled, self.generation == current, self.artworkKey == key else { return }
                 self.artwork = NSImage(cgImage: cgImage, size: .zero)
                 self.loadedArtworkKey = key

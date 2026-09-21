@@ -130,13 +130,13 @@ final class WindowCoordinator: NSObject {
                 MainActor.assumeIsolated { self?.setUnseen(.screenLocked, active) }
             })
         }
-        // Spotify launching, quitting or coming to the front all change what Squidd should be showing.
+        // A music app launching, quitting or coming to the front all change what Squidd should be showing.
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
             workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 MainActor.assumeIsolated {
                     let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                    guard app?.bundleIdentifier == "com.spotify.client" else { return }
+                    guard MusicApp(bundleIdentifier: app?.bundleIdentifier) != nil else { return }
                     self?.store.boostPlayback()
                 }
             })
@@ -233,6 +233,49 @@ final class WindowCoordinator: NSObject {
                                y: screen.visibleFrame.midY - (frame.height + WidgetGeometry.launcherAllowance) / 2)
         place(frame, screen: screen)
     }
+
+    #if DEBUG
+    /// Developer tool: writes the current look into the source folder as `AppearanceDefaults.plist`, which the next
+    /// build ships as what a fresh install starts with. Debug builds only — they alone may write user-chosen files.
+    func saveAppearanceDefaults() {
+        let panel = NSSavePanel()
+        panel.directoryURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        panel.nameFieldStringValue = "AppearanceDefaults.plist"
+        panel.message = "Save into the Squidd source folder. The next build starts fresh installs with this look."
+        NSApp.activate()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try PropertyListSerialization.data(fromPropertyList: store.appearanceSnapshot,
+                                                          format: .xml, options: 0)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    /// Developer tool: erases every Squidd setting and relaunches, to see what a new user sees. macOS keeps the
+    /// Automation permission, which a sandboxed app cannot reset for itself.
+    func resetToFirstLaunch() {
+        let alert = NSAlert()
+        alert.messageText = "Reset Squidd to first launch?"
+        alert.informativeText = "This erases every Squidd setting on this Mac — look, mascot, position, sizes, "
+            + "shortcuts and ink choices — and relaunches. Permission to control Spotify and Music stays; reset it "
+            + "with “tccutil reset AppleEvents com.squidd” to see the first-run prompt too."
+        alert.addButton(withTitle: "Reset and Relaunch")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        // Stop first: stopping saves the panel placement, which the erase then removes.
+        stop()
+        if let domain = Bundle.main.bundleIdentifier { defaults.removePersistentDomain(forName: domain) }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            // `exit` rather than `terminate`, which would run `stop()` again and save the placement back.
+            DispatchQueue.main.async { exit(0) }
+        }
+    }
+    #endif
 
     func saveDefaultSize() {
         defaults.set([card.frame.width, card.frame.height], forKey: "defaultPanelSize")
@@ -507,12 +550,17 @@ final class PanelInteraction: NSView {
         if isLauncher {
             add("Show / Hide Player", #selector(toggle), to: menu)
             add("Settings…", #selector(settings), to: menu)
-            add("Open Spotify", #selector(openPlayer), to: menu)
+            let player = coordinator?.store.playback.app.name ?? MusicApp.spotify.name
+            add("Open \(player)", #selector(openPlayer), to: menu)
             if coordinator?.store.playback.needsAttention == true {
-                add("Fix Spotify Connection…", #selector(settings), to: menu)
+                add("Fix \(player) Connection…", #selector(settings), to: menu)
             }
             menu.addItem(.separator())
             add("Set Current Size as Default", #selector(saveSize), to: menu)
+            #if DEBUG
+            add("Save Appearance as Launch Defaults…", #selector(saveAppearanceDefaults), to: menu)
+            add("Reset to First Launch…", #selector(resetToFirstLaunch), to: menu)
+            #endif
             add("Reset Size", #selector(resetSize), to: menu)
             add("Reset Position", #selector(reset), to: menu)
             add("Open Data Folder", #selector(dataFolder), to: menu)
@@ -538,9 +586,13 @@ final class PanelInteraction: NSView {
         item.target = self; menu.addItem(item); return item
     }
     @objc private func toggle() { coordinator?.toggleCard() }
-    @objc private func openPlayer() { coordinator?.store.openSpotify() }
+    @objc private func openPlayer() { coordinator?.store.openPlayer() }
     @objc private func settings() { coordinator?.showSettings() }
     @objc private func saveSize() { coordinator?.saveDefaultSize() }
+    #if DEBUG
+    @objc private func saveAppearanceDefaults() { coordinator?.saveAppearanceDefaults() }
+    @objc private func resetToFirstLaunch() { coordinator?.resetToFirstLaunch() }
+    #endif
     @objc private func resetSize() { coordinator?.resetSize() }
     @objc private func reset() { coordinator?.resetPosition() }
     @objc private func dataFolder() { coordinator?.openDataFolder() }

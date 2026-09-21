@@ -193,7 +193,7 @@ struct LauncherView: View {
             .animation(.spring(duration: 0.2, bounce: 0.3), value: store.logoPressed)
             // Each item stacks above the one to its right, so a sliding item passes behind its neighbor.
             .zIndex(2)
-            // Nothing loaded in Spotify: the slot keeps its place and shows the design's dashed square.
+            // Nothing loaded in the music app: the slot keeps its place and shows the design's dashed square.
             ZStack {
                 if store.showsArtwork { PreviewArtwork(store: store, radius: 10).transition(.opacity) }
                 else { PillPlaceholder(name: "pill-placeholder-album").transition(.opacity) }
