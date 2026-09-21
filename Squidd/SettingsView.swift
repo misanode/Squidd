@@ -467,7 +467,7 @@ private enum PillLayout: CaseIterable, Identifiable {
     var id: Self { self }
     var artwork: Bool { self == .album || self == .both }
     var mascot: Bool { self == .mascot || self == .both }
-    var caption: String { self == .logo ? "Logo" : self == .both ? "Logo + 2 items" : "Logo + 1 item" }
+    var caption: String { self == .logo ? "" : self == .both ? "" : "" }
     var icon: String {
         switch self {
         case .logo: "appearance-pill-logo"
