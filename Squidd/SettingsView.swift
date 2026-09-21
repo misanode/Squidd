@@ -241,6 +241,10 @@ struct SettingsView: View {
                  + "another device won’t appear here.")
             .gap(33.5)
         }
+        .task { await store.refreshAutomation() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await store.refreshAutomation() }
+        }
     }
 
     private enum ConnectionAction { case openApp, requestPermission, openPrivacySettings }
@@ -264,18 +268,16 @@ struct SettingsView: View {
     }
 
     private func fix(_ app: MusicApp) {
-        switch Automation.permission(for: app) {
+        switch store.automation[app] ?? .notAsked {
         case .appNotRunning: app.open()
-        case .notAsked:
-            _ = Automation.permission(for: app, askIfNeeded: true)
-            store.playback.retry()
+        case .notAsked: Task { await store.requestAutomation(for: app) }
         case .denied: Automation.openPrivacySettings()
         case .granted: break
         }
     }
 
     private func automationAllowed(_ app: MusicApp) -> Binding<Bool> {
-        Binding(get: { Automation.permission(for: app) == .granted }, set: { on in
+        Binding(get: { store.automation[app] == .granted }, set: { on in
             guard on else { Automation.openPrivacySettings(); return }
             fix(app)
         })

@@ -25,7 +25,7 @@ final class Playback {
     private let sources: [MusicApp: any NowPlayingSource]
     private let log = Logger(subsystem: "com.squidd", category: "Playback")
     private let isRunning: (MusicApp) -> Bool
-    private let isPermitted: (MusicApp) -> Bool
+    private let isPermitted: (MusicApp) async -> Bool
     private let images: any ArtworkLoading
     private let pollInterval: Double
     private let idlePollInterval: Double
@@ -55,7 +55,9 @@ final class Playback {
 
     init(source: (any NowPlayingSource)? = nil, sources: [MusicApp: any NowPlayingSource]? = nil,
          isRunning: @escaping (MusicApp) -> Bool = { $0.isRunning },
-         isPermitted: @escaping (MusicApp) -> Bool = { Automation.permission(for: $0) == .granted },
+         isPermitted: @escaping (MusicApp) async -> Bool = { app in
+             await Task.detached { Automation.permission(for: app) == .granted }.value
+         },
          images: (any ArtworkLoading)? = nil,
          pollInterval: Double = 15, idlePollInterval: Double? = nil, backgroundPollInterval: Double? = nil,
          boostInterval: Double = 2, reconciliationDelay: Double = 0.4, observeNotifications: Bool = true) {
@@ -286,7 +288,7 @@ final class Playback {
 
     private func playingElsewhere(than excluded: MusicApp) async -> (MusicApp, NowPlayingSnapshot)? {
         for other in MusicApp.allCases where other != excluded {
-            guard let source = sources[other], isRunning(other), isPermitted(other),
+            guard let source = sources[other], isRunning(other), await isPermitted(other),
                   let value = try? await source.snapshot(), value.isPlaying else { continue }
             return (other, value)
         }
@@ -363,9 +365,15 @@ final class Playback {
         let backoff = min(60, pow(2, Double(failures)))
         switch error {
         case PlayerBridgeError.permissionDenied:
-            clearNowPlaying(Automation.permission(for: app) == .notAsked ? .permissionNeeded : .permissionDenied)
+            clearNowPlaying(.permissionDenied)
             message = PlayerBridgeError.permissionDenied.description(for: app)
             retryAt = Date().addingTimeInterval(30)
+            let refused = app
+            Task { [weak self] in
+                let permission = await Task.detached { Automation.permission(for: refused) }.value
+                guard let self, self.app == refused, [.permissionNeeded, .permissionDenied].contains(self.state) else { return }
+                self.state = permission == .notAsked ? .permissionNeeded : .permissionDenied
+            }
             return
         case PlayerBridgeError.notRunning:
             noteAppClosed()

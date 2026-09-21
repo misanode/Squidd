@@ -47,6 +47,7 @@ final class AppStore {
     var shortcutErrors: [String] = []
     var preferenceError: String?
     var loginStatus = SMAppService.mainApp.status
+    var automation: [MusicApp: Automation.Permission] = [:]
     var inkChoices: [String: String]
     var customMascotPath: String? { didSet { defaults.set(customMascotPath, forKey: "customMascotPath") } }
     var rimAccentHex: String? { didSet { defaults.set(rimAccentHex, forKey: "rimAccentHex") } }
@@ -103,6 +104,18 @@ final class AppStore {
             "showPillArtwork": showPillArtwork, "showMascot": showMascot, "showMusicNotes": showMusicNotes,
         ]
         return values.compactMapValues { $0 }
+    }
+
+    func refreshAutomation() async {
+        automation = await Task.detached {
+            Dictionary(uniqueKeysWithValues: MusicApp.allCases.map { ($0, Automation.permission(for: $0)) })
+        }.value
+    }
+
+    func requestAutomation(for app: MusicApp) async {
+        _ = await Task.detached { Automation.permission(for: app, askIfNeeded: true) }.value
+        await refreshAutomation()
+        playback.retry()
     }
 
     func setSuspended(_ value: Bool) { playback.setSuspended(value) }
