@@ -6,9 +6,6 @@ enum WidgetMetrics {
     static let card = CGSize(width: 316, height: 192)
     static let launcher = CGSize(width: 169, height: 80)
 
-    // Launcher pill. The logo always shows; album art and the mascot join it when Settings includes them (as
-    // placeholders when there's nothing to draw), so with neither the pill is as wide as it is tall and reads as a
-    // circle around the logo.
     static let pillHeight: CGFloat = 52
     static let pillSpacing: CGFloat = 7
     static let pillLeading: CGFloat = 6
@@ -16,17 +13,13 @@ enum WidgetMetrics {
     static let artSize: CGFloat = 40
     static let mascotSize: CGFloat = 35
 
-    /// Without a mascot, extra trailing room keeps the art's corners as far from the pill's curve as the logo is.
     static func pillTrailing(artwork: Bool, mascot: Bool) -> CGFloat { artwork && !mascot ? 16 : pillLeading }
 
-    /// The pill within a launcher panel of `size`. Centered both ways, so it sits over the middle of the card however
-    /// many items it holds, and is the same in flipped and unflipped views.
     static func pillRect(inLauncher size: CGSize, artwork: Bool, mascot: Bool) -> CGRect {
         let width = pillWidth(artwork: artwork, mascot: mascot)
         return CGRect(x: (size.width - width) / 2, y: (size.height - pillHeight) / 2, width: width, height: pillHeight)
     }
 
-    /// The logo's circle within a launcher panel of `size`, the same in flipped and unflipped views.
     static func logoRect(inLauncher size: CGSize, artwork: Bool, mascot: Bool) -> CGRect {
         let pill = pillRect(inLauncher: size, artwork: artwork, mascot: mascot)
         return CGRect(x: pill.minX + pillLeading, y: (size.height - logoSize) / 2, width: logoSize, height: logoSize)
@@ -53,7 +46,6 @@ struct NativeGlass: ViewModifier {
             content.background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: radius))
         } else {
             content.background {
-                // Dark: the same clear glass under a deep tint, so white text stays readable over bright windows.
                 RoundedRectangle(cornerRadius: radius)
                     .fill(.black.opacity(dark ? 0.5 : 0))
                     .allowsHitTesting(false)
@@ -74,7 +66,6 @@ struct NativeGlass: ViewModifier {
     }
 }
 
-/// The dashed ring around the card: white in Light, near-black in Dark to match the tinted card.
 struct CardOutline: View {
     var appearance: WidgetAppearance
 
@@ -173,27 +164,21 @@ struct ArtworkPlaceholder: View {
 struct LauncherView: View {
     var store: AppStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// A critically damped spring: quick off the mark, a long soft settle, no overshoot.
     private static let resize = Animation.smooth(duration: 0.45)
     var body: some View {
         let artwork = store.pillShowsArtwork
         let mascot = store.pillShowsMascot
-        // Spacing belongs to the art and mascot slots, so a closed slot leaves no gap behind.
         return HStack(spacing: 0) {
             ZStack {
                 Circle().fill(store.logoCircleColor)
-                // Same share of the circle the logo took in the original app-icon artwork (700 of 1024 px).
                 SquiddLogo(primary: store.logoPrimaryColor, highlight: store.logoHighlightColor)
                     .frame(width: WidgetMetrics.logoSize * 700 / 1024)
             }
             .frame(width: WidgetMetrics.logoSize, height: WidgetMetrics.logoSize)
-            // Pressed feedback: a slight shrink and fade, springing back on release. Reduce Motion keeps just the fade.
             .scaleEffect(store.logoPressed && !reduceMotion ? 0.9 : 1)
             .opacity(store.logoPressed ? 0.7 : 1)
             .animation(.spring(duration: 0.2, bounce: 0.3), value: store.logoPressed)
-            // Each item stacks above the one to its right, so a sliding item passes behind its neighbor.
             .zIndex(2)
-            // Nothing loaded in the music app: the slot keeps its place and shows the design's dashed square.
             ZStack {
                 if store.showsArtwork { PreviewArtwork(store: store, radius: 10).transition(.opacity) }
                 else { PillPlaceholder(name: "pill-placeholder-album").transition(.opacity) }
@@ -202,7 +187,6 @@ struct LauncherView: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: store.showsArtwork)
             .modifier(PillSlot(progress: artwork ? 1 : 0, width: WidgetMetrics.artSize))
             .zIndex(1)
-            // No mascot chosen: the design's dashed smiley holds the slot.
             ZStack {
                 if let url = store.customMascotURL {
                     AnimatedMascotView(playing: store.isPlaying && !store.sleeping && mascot, customURL: url)
@@ -221,9 +205,7 @@ struct LauncherView: View {
         .frame(height: WidgetMetrics.pillHeight)
         .modifier(NativeGlass(radius: WidgetMetrics.pillHeight / 2, appearance: store.widgetAppearance))
         .overlay { PlaybackRim(playing: store.isPlaying && !store.sleeping, primaryColor: store.rimPrimaryColor, accentColor: store.rimAccentColor) }
-        // Centered in the panel, so a pill with only one or two items still sits over the middle of the card.
         .frame(width: WidgetMetrics.launcher.width, height: WidgetMetrics.launcher.height)
-        // One transaction for the glass, the rim and the contents, so they all move together.
         .animation(reduceMotion ? nil : Self.resize, value: artwork)
         .animation(reduceMotion ? nil : Self.resize, value: mascot)
         .accessibilityElement(children: .ignore)
@@ -231,7 +213,6 @@ struct LauncherView: View {
     }
 }
 
-/// An empty pill slot: one of the design's dashed outlines, inset a little so it sits like the art it stands in for.
 struct PillPlaceholder: View {
     var name: String
 
@@ -242,17 +223,9 @@ struct PillPlaceholder: View {
     }
 }
 
-/// The album art's or the mascot's slot in the pill, opening and closing as `progress` goes between 1 and 0. The item
-/// stays in the pill's layout the whole time, so the pill, its neighbors and the sliding item move together; inserted
-/// and removed views instead kept the spot they started from while the re-centered pill moved on, so a leaving item
-/// slid out past the pill's left edge. At 0 the slot has no width and the item sits small, centered behind its left
-/// neighbor (the logo or the album art, both 40 pt wide); at 1 it's full size in its own slot, so it grows as it
-/// emerges and shrinks as it tucks away. Opacity rises only over the first quarter, so a leaving item stays solid
-/// until it's nearly hidden instead of fading out ahead of the pill.
 struct PillSlot: ViewModifier, Animatable {
     static let hiddenScale = 0.4
     var progress: Double
-    /// The item's own width, not counting the spacing before it.
     var width: CGFloat
     nonisolated var animatableData: Double {
         get { progress }
@@ -262,15 +235,12 @@ struct PillSlot: ViewModifier, Animatable {
     func body(content: Content) -> some View {
         content
             .scaleEffect(Self.hiddenScale + (1 - Self.hiddenScale) * progress)
-            // Riding the slot's trailing edge puts the item's center half its width before the slot when closed;
-            // this moves it the rest of the way to the neighbor's center.
             .offset(x: -(WidgetMetrics.logoSize - width) / 2 * (1 - progress))
             .opacity(min(1, max(0, progress / 0.25)))
             .frame(width: (WidgetMetrics.pillSpacing + width) * progress, alignment: .trailing)
     }
 }
 
-/// The Squidd logo as two tintable vector layers, shared by the launcher pill and the Settings header.
 struct SquiddLogo: View {
     var primary: Color
     var highlight: Color
@@ -285,7 +255,6 @@ struct SquiddLogo: View {
     }
 }
 
-// Original Electron SVG coordinates; previous is the mirrored next glyph.
 struct TransportGlyph: Shape {
     enum Kind { case previous, play, pause, next }
     var kind: Kind

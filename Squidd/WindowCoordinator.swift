@@ -14,12 +14,9 @@ final class FloatingPanel: NSPanel {
         isReleasedWhenClosed = false
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        // Keep the floating widget visually active without changing keyboard focus.
         let hosting = NSHostingView(rootView: rootView
             .environment(\.appearsActive, true)
             .environment(\.materialActiveAppearance, .active))
-        // A plain container lets PanelInteraction sit above the hosting view as a sibling;
-        // AppKit doesn't support adding subviews to an NSHostingView.
         let container = NSView(frame: NSRect(origin: .zero, size: size))
         hosting.frame = container.bounds
         hosting.autoresizingMask = [.width, .height]
@@ -29,9 +26,6 @@ final class FloatingPanel: NSPanel {
     var acceptsKeyboard = false
     override var canBecomeKey: Bool { acceptsKeyboard }
     override var canBecomeMain: Bool { false }
-    // AppKit asks this separate appearance hook when rendering window glass.
-    // Keep actual isKeyWindow/isMainWindow truthful for focus and event routing.
-    // This selector is undocumented; recheck inactive glass on macOS updates.
     @objc dynamic func hasKeyAppearance() -> Bool { true }
 
 }
@@ -62,10 +56,8 @@ final class WindowCoordinator: NSObject {
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
-    /// Reasons nobody can see the widget. Playback polling stops while any of them holds.
     private enum Unseen: Hashable { case systemSleep, displaysAsleep, screenLocked, sessionInactive }
     private var unseen: Set<Unseen> = []
-    /// Keyboard gliding: arrow shortcuts currently held, the player's unrounded position and its velocity (pt/s).
     private var glideKeys: [UInt32: CGVector] = [:]
     private var glideTimer: Timer?
     private var glideOrigin = CGPoint.zero
@@ -86,7 +78,6 @@ final class WindowCoordinator: NSObject {
         hotKeys.action = { [weak self] id, pressed in
             guard let self else { return }
             if id == 0 { if pressed { self.toggleCard() }; return }
-            // Shortcut order: up, left, down, right. Screen y grows upward.
             let directions: [UInt32: CGVector] = [1: CGVector(dx: 0, dy: 1), 2: CGVector(dx: -1, dy: 0),
                                                   3: CGVector(dx: 0, dy: -1), 4: CGVector(dx: 1, dy: 0)]
             guard let direction = directions[id] else { return }
@@ -112,7 +103,6 @@ final class WindowCoordinator: NSObject {
                 self?.recoverDisplay(); self?.startPointerTracking()
             }
         })
-        // Displays asleep, a locked screen or another user's session: the Mac is awake but nobody sees the widget.
         let unseenPairs: [(NSNotification.Name, NSNotification.Name, Unseen)] = [
             (NSWorkspace.screensDidSleepNotification, NSWorkspace.screensDidWakeNotification, .displaysAsleep),
             (NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification, .sessionInactive),
@@ -130,7 +120,6 @@ final class WindowCoordinator: NSObject {
                 MainActor.assumeIsolated { self?.setUnseen(.screenLocked, active) }
             })
         }
-        // A music app launching, quitting or coming to the front all change what Squidd should be showing.
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
             workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
@@ -143,8 +132,6 @@ final class WindowCoordinator: NSObject {
         }
     }
 
-    /// Suspends polling when the first reason appears and resumes once the last one clears. Resuming polls at once,
-    /// then briefly quickly — kept short, since unlocking happens many times a day.
     private func setUnseen(_ reason: Unseen, _ active: Bool) {
         let wasSuspended = !unseen.isEmpty
         if active { unseen.insert(reason) } else { unseen.remove(reason) }
@@ -175,13 +162,9 @@ final class WindowCoordinator: NSObject {
         } else { card.orderOut(nil) }
     }
 
-    // MARK: Keyboard gliding
+    private static let glideSpeed: CGFloat = 160
+    private static let glideResponse: CGFloat = 14
 
-    private static let glideSpeed: CGFloat = 160        // pt/s, constant for as long as an arrow is held
-    private static let glideResponse: CGFloat = 14      // how fast velocity follows the keys; higher is snappier
-
-    /// Starts, steers or releases a glide at one steady speed, easing in and out over a split second so it never
-    /// jerks; two arrows move the player diagonally.
     func setGlide(_ id: UInt32, direction: CGVector?) {
         if let direction { glideKeys[id] = direction } else { glideKeys.removeValue(forKey: id) }
         guard glideTimer == nil, !glideKeys.isEmpty else { return }
@@ -199,7 +182,6 @@ final class WindowCoordinator: NSObject {
         let now = CACurrentMediaTime()
         let dt = CGFloat(min(0.05, now - glideTick))
         glideTick = now
-        // Letting go of ⌘ before the arrow can leave the release unreported; no arrow steers without ⌘ held.
         if !NSEvent.modifierFlags.contains(.command) { glideKeys.removeAll() }
         var target = CGVector.zero
         for direction in glideKeys.values {
@@ -213,14 +195,11 @@ final class WindowCoordinator: NSObject {
             glideTimer?.invalidate(); glideTimer = nil
             return
         }
-        // Something else moved the player mid-glide (a drag, a display change): carry on from where it is now.
         if abs(card.frame.minX - glideOrigin.x) > 2 || abs(card.frame.minY - glideOrigin.y) > 2 { glideOrigin = card.frame.origin }
-        // Track the position unrounded, since windows land on whole pixels and slow steps would otherwise stall.
         let proposed = CGPoint(x: glideOrigin.x + glideVelocity.dx * dt, y: glideOrigin.y + glideVelocity.dy * dt)
         var frame = card.frame
         frame.origin = proposed
         place(frame, screen: bestScreen(for: frame))
-        // At a screen edge, drop the speed pushing into it so letting go there doesn't leave momentum behind.
         let placed = card.frame.origin
         if abs(placed.x - proposed.x) > 1 { glideVelocity.dx = 0; glideOrigin.x = placed.x } else { glideOrigin.x = proposed.x }
         if abs(placed.y - proposed.y) > 1 { glideVelocity.dy = 0; glideOrigin.y = placed.y } else { glideOrigin.y = proposed.y }
@@ -235,8 +214,6 @@ final class WindowCoordinator: NSObject {
     }
 
     #if DEBUG
-    /// Developer tool: writes the current look into the source folder as `AppearanceDefaults.plist`, which the next
-    /// build ships as what a fresh install starts with. Debug builds only — they alone may write user-chosen files.
     func saveAppearanceDefaults() {
         let panel = NSSavePanel()
         panel.directoryURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -253,8 +230,6 @@ final class WindowCoordinator: NSObject {
         }
     }
 
-    /// Developer tool: erases every Squidd setting and relaunches, to see what a new user sees. macOS keeps the
-    /// Automation permission, which a sandboxed app cannot reset for itself.
     func resetToFirstLaunch() {
         let alert = NSAlert()
         alert.messageText = "Reset Squidd to first launch?"
@@ -265,13 +240,11 @@ final class WindowCoordinator: NSObject {
         alert.addButton(withTitle: "Cancel")
         NSApp.activate()
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        // Stop first: stopping saves the panel placement, which the erase then removes.
         stop()
         if let domain = Bundle.main.bundleIdentifier { defaults.removePersistentDomain(forName: domain) }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
-            // `exit` rather than `terminate`, which would run `stop()` again and save the placement back.
             DispatchQueue.main.async { exit(0) }
         }
     }
@@ -307,7 +280,7 @@ final class WindowCoordinator: NSObject {
         let pointer = NSEvent.mouseLocation
         let delta = CGPoint(x: pointer.x - pointerOrigin.x, y: pointer.y - pointerOrigin.y)
         dragging = dragging || abs(delta.x) > 4 || abs(delta.y) > 4
-        if dragging { setLogoPressed(false) } // It's a move, not a click.
+        if dragging { setLogoPressed(false) }
         if let corner = resizeCorner {
             let screen = bestScreen(for: originalFrame)
             guard let screen else { return }
@@ -318,8 +291,6 @@ final class WindowCoordinator: NSObject {
         }
     }
 
-    /// `onLogo`: the press came up over the launcher's logo. A click there opens Settings; showing and hiding the
-    /// player is left to ⌘/, and a click elsewhere on the pill does nothing beyond a possible drag.
     func endDrag(onLogo: Bool) {
         if resizeCorner == nil && !dragging && onLogo { toggleSettings() }
         setLogoPressed(false)
@@ -330,8 +301,6 @@ final class WindowCoordinator: NSObject {
     private var logoPressedAt: CFTimeInterval = 0
     private var logoRelease: Task<Void, Never>?
 
-    /// Drives the logo's pressed look. A quick click would lift before the shrink is visible, so the press is held
-    /// for a minimum moment before springing back.
     private func setLogoPressed(_ pressed: Bool) {
         logoRelease?.cancel(); logoRelease = nil
         if pressed {
@@ -399,8 +368,6 @@ final class WindowCoordinator: NSObject {
         if let data = try? JSONEncoder().encode(saved) { defaults.set(data, forKey: "panelPlacement") }
     }
 
-    // Position polling sees re-entry even while the transparent window ignores events.
-    // No event tap, keystroke monitor, Accessibility, or screen-capture permission is used.
     private func startPointerTracking() {
         pointerTimer?.invalidate()
         pointerTimer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
@@ -411,8 +378,6 @@ final class WindowCoordinator: NSObject {
 
     private func updatePointerPassthrough() {
         guard !interacting else { return }
-        // The pill only fills part of its panel, and shrinks when there's no album art or mascot; anywhere outside it
-        // belongs to whatever is behind the launcher.
         let launcherRect = WidgetMetrics.pillRect(inLauncher: launcher.frame.size, artwork: store.pillShowsArtwork,
                                                   mascot: store.pillShowsMascot)
         let cardRect = CGRect(origin: .zero, size: card.frame.size).insetBy(dx: 6, dy: 6)
@@ -422,8 +387,6 @@ final class WindowCoordinator: NSObject {
         }
     }
 
-    /// The logo's click: closes Settings when it's open in front, otherwise opens it or brings it forward — so a
-    /// Settings window buried behind another app's windows comes back rather than vanishing.
     func toggleSettings() {
         if let settings, settings.isVisible, NSApp.isActive { settings.orderOut(nil) } else { showSettings() }
     }
@@ -440,20 +403,16 @@ final class WindowCoordinator: NSObject {
                 },
                 resetSize: { [weak self, weak window] in
                     guard let self, let window else { return }
-                    // Keep the top edge where it is, like the player's Reset Size.
                     var frame = window.frame
                     frame.origin.y = frame.maxY - settingsDefaultSize.height
                     frame.size = settingsDefaultSize
                     window.setFrame(frame, display: true, animate: true)
                 })
             let host = NSHostingView(rootView: SettingsView(store: store, actions: actions))
-            // The window's own minimum governs resizing; the tabs scroll when they run out of height.
             host.sizingOptions = []
             window.contentView = host
-            // Reopen at the size and place the panel was left at.
             if !window.setFrameUsingName("SquiddSettingsWindow") { window.center() }
             window.setFrameAutosaveName("SquiddSettingsWindow")
-            // A size saved before the minimum grew would cut content off; grow it back to the minimum.
             let saved = window.frame, minimum = SettingsView.minimumSize
             if saved.width < minimum.width || saved.height < minimum.height {
                 let size = NSSize(width: max(saved.width, minimum.width), height: max(saved.height, minimum.height))
@@ -466,7 +425,6 @@ final class WindowCoordinator: NSObject {
         settings?.makeKeyAndOrderFront(nil)
     }
 
-    /// TEMPORARY: the size saved from Settings' right-click menu, else the design's.
     private var settingsDefaultSize: CGSize {
         if let size = defaults.array(forKey: "settingsDefaultSize") as? [Double], size.count == 2,
            size.allSatisfy({ $0.isFinite && $0 > 0 }) {
@@ -480,7 +438,6 @@ final class WindowCoordinator: NSObject {
             let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 .appendingPathComponent("Squidd", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            // Preferences remain in UserDefaults; export a readable snapshot for inspection.
             var snapshot: [String: Any] = ["inkOverrides": store.inkChoices, "widgetAppearance": store.widgetAppearance.rawValue]
             if let size = defaults.array(forKey: "defaultPanelSize") { snapshot["defaultPanelSize"] = size }
             if let placement = defaults.data(forKey: "panelPlacement"), let value = try? JSONSerialization.jsonObject(with: placement) { snapshot["panelPlacement"] = value }
@@ -521,7 +478,6 @@ final class PanelInteraction: NSView {
     }
     override func resetCursorRects() {
         if isLauncher {
-            // Match the pill, which narrows when Settings leaves out the album art or the mascot.
             let store = coordinator?.store
             addCursorRect(WidgetMetrics.pillRect(inLauncher: bounds.size, artwork: store?.pillShowsArtwork ?? true,
                                                  mascot: store?.pillShowsMascot ?? true),
@@ -596,7 +552,6 @@ final class PanelInteraction: NSView {
     @objc private func resetSize() { coordinator?.resetSize() }
     @objc private func reset() { coordinator?.resetPosition() }
     @objc private func dataFolder() { coordinator?.openDataFolder() }
-    // The menu item's checkmark shows the state; Settings only opens to show a failure.
     @objc private func login() {
         coordinator?.store.toggleLogin()
         if coordinator?.store.preferenceError != nil { coordinator?.showSettings() }

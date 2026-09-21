@@ -12,7 +12,6 @@ enum InkMode: String, CaseIterable {
     case automatic = "Automatic", white = "White", dark = "Dark grey", scrim = "White on scrim"
 }
 
-/// The widget's glass. Light is the original clear look; Dark tints it so white text holds up over bright windows.
 enum WidgetAppearance: String, CaseIterable {
     case light = "Light", dark = "Dark"
 
@@ -37,10 +36,8 @@ extension Color {
 final class AppStore {
     let playback: Playback
     var preview: PreviewState = .off
-    /// The launcher keeps showing artwork and play state while the card is hidden, so polling slows rather than stops.
     var cardVisible = true { didSet { playback.setBackground(!cardVisible) } }
     var sleeping = false
-    /// The launcher's logo is being clicked; it shrinks and dims slightly as feedback.
     var logoPressed = false
     private var previewElapsed: Double = 0
     private let previewDuration: Double = 212
@@ -61,7 +58,6 @@ final class AppStore {
     var showPillArtwork: Bool { didSet { defaults.set(showPillArtwork, forKey: "showPillArtwork") } }
     var showMascot: Bool { didSet { defaults.set(showMascot, forKey: "showMascot") } }
     var showMusicNotes: Bool { didSet { defaults.set(showMusicNotes, forKey: "showMusicNotes") } }
-    // The logo's original colors: headband and ear cups, tentacles, and the black behind it on the pill.
     static let defaultLogoPrimary = Color(hex: "#8D0404") ?? Color(red: 0.55, green: 0.02, blue: 0.02)
     static let defaultLogoHighlight = Color(hex: "#E54B4B") ?? Color(red: 0.9, green: 0.3, blue: 0.3)
     static let defaultLogoCircle = Color.black
@@ -70,20 +66,13 @@ final class AppStore {
     private var tick: Task<Void, Never>?
     private var lastTick = ProcessInfo.processInfo.systemUptime
 
-    /// `source` and `observeNotifications` exist for the checks, so they can exercise the store without touching
-    /// whatever music app happens to be running on the machine.
     init(defaults: UserDefaults = .standard, source: (any NowPlayingSource)? = nil,
          observeNotifications: Bool = true) {
         self.defaults = defaults
-        // What a fresh install looks like, when the bundle carries a saved look. Registered defaults sit under
-        // anything the user has set, so this only fills in settings they never touched.
         if let url = Bundle.main.url(forResource: "AppearanceDefaults", withExtension: "plist"),
            let shipped = NSDictionary(contentsOf: url) as? [String: Any] {
             defaults.register(defaults: shipped.filter { Self.launchDefaultKeys.contains($0.key) })
         }
-        // Both apps broadcast every state change, so these are only a safety net for a notification that never
-        // arrives: 15s while playing, 30s otherwise, 60s while the card is hidden. Squidd still reads quickly for a
-        // moment after a music app launches or activates, the card opens, or the screen comes back.
         playback = Playback(source: source, pollInterval: 15, idlePollInterval: 30,
                                    backgroundPollInterval: 60, boostInterval: 2,
                                    observeNotifications: observeNotifications)
@@ -91,7 +80,6 @@ final class AppStore {
         customMascotPath = defaults.string(forKey: "customMascotPath")
         rimAccentHex = defaults.string(forKey: "rimAccentHex")
         showCardOutline = defaults.object(forKey: "showCardOutline") as? Bool ?? true
-        // "Automatic" is gone: settle it once on whatever macOS is using now.
         let systemDark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
         widgetAppearance = WidgetAppearance(rawValue: defaults.string(forKey: "widgetAppearance") ?? "")
             ?? (systemDark ? .dark : .light)
@@ -103,16 +91,11 @@ final class AppStore {
         showMusicNotes = defaults.object(forKey: "showMusicNotes") as? Bool ?? true
     }
 
-    /// The appearance settings `AppearanceDefaults.plist` can ship. Left out on purpose: Light/Dark, which a fresh
-    /// install settles from macOS; the custom mascot, a file on the developer's Mac; and ink choices, which are
-    /// per-artwork.
     static let launchDefaultKeys: Set<String> = [
         "rimAccentHex", "showCardOutline", "logoPrimaryHex", "logoHighlightHex", "logoCircleHex",
         "showPillArtwork", "showMascot", "showMusicNotes",
     ]
 
-    /// The current look, keyed for `AppearanceDefaults.plist`. Colors still on their built-in value are left out,
-    /// so they stay built-in.
     var appearanceSnapshot: [String: Any] {
         let values: [String: Any?] = [
             "rimAccentHex": rimAccentHex, "showCardOutline": showCardOutline,
@@ -126,17 +109,13 @@ final class AppStore {
     func boostPlayback(for seconds: Double = 45) { playback.boost(for: seconds) }
 
     var customMascotURL: URL? { customMascotPath.map { URL(fileURLWithPath: $0) } }
-    /// The pill's mascot slot follows Settings alone; with no mascot chosen it holds a placeholder. Hiding it keeps
-    /// the chosen file, so showing it again needs no re-pick.
     var pillShowsMascot: Bool { showMascot }
-    /// The ring's primary color is the logo's, so the two always match.
     var rimPrimaryColor: Color { logoPrimaryColor }
     var rimAccentColor: Color { rimAccentHex.flatMap { Color(hex: $0) } ?? AppStore.defaultRimAccent }
 
     var logoPrimaryColor: Color { logoPrimaryHex.flatMap { Color(hex: $0) } ?? AppStore.defaultLogoPrimary }
     var logoHighlightColor: Color { logoHighlightHex.flatMap { Color(hex: $0) } ?? AppStore.defaultLogoHighlight }
     var logoCircleColor: Color { logoCircleHex.flatMap { Color(hex: $0) } ?? AppStore.defaultLogoCircle }
-    /// True while the logo and ring still use their original colors, so Settings can hide its Reset button.
     var accentIsDefault: Bool {
         logoPrimaryColor.hexString == AppStore.defaultLogoPrimary.hexString
             && logoHighlightColor.hexString == AppStore.defaultLogoHighlight.hexString
@@ -163,7 +142,6 @@ final class AppStore {
         for item in items where item.lastPathComponent.hasPrefix(prefix) { try? FileManager.default.removeItem(at: item) }
     }
 
-    /// Starts the mascot's error message, so Settings can show it on the Appearance tab.
     static let mascotErrorPrefix = "Custom mascot"
 
     func setCustomMascot(from source: URL) {
@@ -201,19 +179,14 @@ final class AppStore {
     var artworkKey: String { preview == .off ? playback.artworkKey : (canControl ? "preview://artwork/\(sampleIndex)" : "idle") }
     var trackIdentity: String { preview == .off ? playback.identity : "preview:\(sampleIndex)" }
     var artwork: NSImage? { preview == .off ? playback.artwork : nil }
-    /// Reserve the slot while the current track's artwork is loading, including retries.
     var showsArtwork: Bool { preview == .off ? artworkKey != "idle" : canControl }
-    /// The launcher's art slot follows Settings alone; with nothing loaded it holds a placeholder.
     var pillShowsArtwork: Bool { showPillArtwork }
-    /// Ink belongs to the artwork on screen, which lags `artworkKey` while the next track's image loads.
     private var inkKey: String { preview == .off ? playback.loadedArtworkKey : artworkKey }
     var ink: InkMode { InkMode(rawValue: inkChoices[inkKey] ?? "") ?? .automatic }
     var shownDuration: Double { preview == .off ? playback.duration : (canControl ? duration : 0) }
-    /// Hide the scrubber when no track duration is available.
     var showsTimeline: Bool { preview == .off ? playback.duration > 0 : canControl }
 
     func permits(_ command: PlaybackCommand) -> Bool { preview == .off ? playback.permits(command) : canControl }
-    /// Like `permits`, but stays true while another command is in flight, so each button's look is its own.
     func offers(_ command: PlaybackCommand) -> Bool { preview == .off ? playback.offers(command) : canControl }
 
     func setInk(_ mode: InkMode) {
@@ -248,7 +221,6 @@ final class AppStore {
         guard canControl else { return }; previewElapsed = max(0, min(seconds, duration))
     }
 
-    /// Opens the app the card follows.
     func openPlayer() { playback.app.open() }
 
     func reconcileClock() {

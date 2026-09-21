@@ -16,7 +16,6 @@ final class HeldArtwork: ArtworkLoading {
     func complete(_ key: String, image: CGImage) { pending.removeValue(forKey: key)?.resume(returning: image) }
 }
 
-/// Stands in for a music app. Nothing here sends an Apple Event.
 @MainActor
 final class TestSource: NowPlayingSource {
     var next: Result<NowPlayingSnapshot?, Error> = .success(nil)
@@ -74,7 +73,6 @@ struct SpotifyPlaybackChecks {
         return snapshot
     }
 
-    /// Shaped like a real `PlaybackStateChanged` payload, captured from Spotify.
     static func broadcast(state: String = "Playing", id: String = "spotify:track:one", name: String = "Juno",
                           position: Double = 126.39, duration: Int = 223_192,
                           artwork: Int = 1) -> [AnyHashable: Any] {
@@ -84,8 +82,6 @@ struct SpotifyPlaybackChecks {
          "Popularity": 83, "Play Count": 0]
     }
 
-    /// Shaped like Apple Music's `com.apple.Music.playerInfo` payload. Note what is missing next to Spotify's: no
-    /// playback position and no artwork flag. `PersistentID` is a signed 64-bit number.
     static func musicBroadcast(state: String = "Playing", persistentID: Int64 = 0x1A2B3C4D5E6F7081,
                                name: String = "Blinding Lights", totalTime: Int = 200_040) -> [AnyHashable: Any] {
         ["Player State": state, "PersistentID": NSNumber(value: persistentID), "Name": name, "Artist": "The Weeknd",
@@ -103,7 +99,6 @@ struct SpotifyPlaybackChecks {
         return snapshot
     }
 
-    /// Both apps at once. Both count as open and allowed unless a check says otherwise.
     @MainActor
     static func playback(spotify: TestSource, music: TestSource, images: (any ArtworkLoading)? = nil,
                          running: @escaping (MusicApp) -> Bool = { _ in true }) -> Playback {
@@ -117,7 +112,6 @@ struct SpotifyPlaybackChecks {
                          pollInterval: Double = 0.05, idlePollInterval: Double? = nil,
                          backgroundPollInterval: Double? = nil, boostInterval: Double = 0.02,
                          reconciliationDelay: Double = 0) -> Playback {
-        // Notification observation off: the checks drive `receive(notification:)` instead of a real broadcast.
         Playback(source: source, images: images ?? EmptyArtwork(), pollInterval: pollInterval,
                         idlePollInterval: idlePollInterval, backgroundPollInterval: backgroundPollInterval,
                         boostInterval: boostInterval, reconciliationDelay: reconciliationDelay,
@@ -145,14 +139,6 @@ struct SpotifyPlaybackChecks {
         }
     }
 
-    // MARK: Integration (opt-in)
-
-    /// Talks to the Spotify actually running on this Mac. Opt-in with `--integration`, because it needs Spotify
-    /// open with a track loaded, and because Apple Events sent from a terminal are attributed to that terminal —
-    /// so the Automation prompt, if it appears, names the terminal rather than Squidd.
-    ///
-    /// It pauses and resumes once, which is briefly audible, and seeks to the position the track is already at,
-    /// which is not. Both write paths use different event codes, so both are worth exercising.
     @MainActor static func checkAgainstRealSpotify() async throws {
         guard MusicApp.spotify.isRunning else {
             print("Integration checks skipped: Spotify isn't running")
@@ -171,7 +157,6 @@ struct SpotifyPlaybackChecks {
         }
         assert(!snapshot.name.isEmpty, "A loaded track should have a name")
         assert(snapshot.trackID.hasPrefix("spotify:"), "Track ID should be a Spotify URI, got \(snapshot.trackID)")
-        // The units, against the live app: a track is minutes long, not hours, and position sits inside it.
         assert(snapshot.duration > 1 && snapshot.duration < 24 * 3600,
                "Duration looks wrong in seconds: \(snapshot.duration) — is Spotify still reporting milliseconds?")
         assert((snapshot.positionSeconds ?? 0) <= snapshot.duration + 1, "Position should fall within the track")
@@ -183,7 +168,6 @@ struct SpotifyPlaybackChecks {
             }
         }
 
-        // Transport, restoring whatever state the track was in.
         let wasPlaying = snapshot.isPlaying
         try await bridge.send(wasPlaying ? .pause : .play)
         try await Task.sleep(for: .milliseconds(400))
@@ -192,16 +176,12 @@ struct SpotifyPlaybackChecks {
         try await bridge.send(wasPlaying ? .play : .pause)
         try await Task.sleep(for: .milliseconds(400))
 
-        // Seek to where it already is: proves the write path without moving the track.
         if let now = try await bridge.snapshot()?.elapsed, now > 0 {
             try await bridge.send(.seek(now))
         }
         print("Integration checks passed against the running Spotify: '\(snapshot.name)' by \(snapshot.artist)")
     }
 
-    /// The Apple Music counterpart. Same caveats: opt-in, briefly audible, and the prompt names the terminal. This
-    /// is also where Music's broadcast gets verified against a real payload, since the synthetic one above is only
-    /// as good as its assumptions.
     @MainActor static func checkAgainstRealMusic() async throws {
         guard MusicApp.music.isRunning else {
             print("Apple Music integration checks skipped: Music isn't running")
@@ -231,9 +211,7 @@ struct SpotifyPlaybackChecks {
             print("Apple Music artwork: none for this track")
         }
 
-        // Listen for the broadcast while flipping play/pause, so its real keys can be compared with the synthetic
-        // payload the unit checks use.
-        final class Inbox: @unchecked Sendable { var userInfo: [AnyHashable: Any]? } // Only touched on main.
+        final class Inbox: @unchecked Sendable { var userInfo: [AnyHashable: Any]? }
         let inbox = Inbox()
         let observer = DistributedNotificationCenter.default().addObserver(
             forName: MusicApp.music.broadcast, object: nil, queue: .main) { inbox.userInfo = $0.userInfo }
@@ -258,11 +236,7 @@ struct SpotifyPlaybackChecks {
         print("Integration checks passed against the running Music: '\(snapshot.name)' by \(snapshot.artist)")
     }
 
-    // MARK: Snapshot
-
     @MainActor static func checkSnapshotValues() throws {
-        // Spotify reports duration in milliseconds and position in seconds. Getting this backwards is the single
-        // easiest mistake here, so it is pinned down.
         let track = sample()
         assert(track.duration == 200, "duration should convert milliseconds to seconds")
         assert(track.elapsed == 10)
@@ -271,37 +245,29 @@ struct SpotifyPlaybackChecks {
         assert(track.isLoaded && track.isPlaying && !track.isAd && !track.isLocal)
         assert(track.permits(.play) && track.permits(.next) && track.permits(.seek(10)))
 
-        // Past the end clamps rather than running away.
         let overrun = sample(position: 500)
         assert(overrun.elapsed == 200)
 
-        // An ad: named plainly, and no transport.
         var ad = sample(id: "spotify:ad:abc")
         ad.name = ""
         assert(ad.isAd && ad.title == "Advertisement")
         assert(!ad.permits(.play) && !ad.permits(.next) && !ad.permits(.seek(1)))
 
-        // A local file has no artwork URL but still plays and seeks.
         let local = sample(id: "spotify:local:something")
         assert(local.isLocal && local.artworkURL == nil && local.permits(.seek(1)))
 
-        // Stopped: nothing loaded, nothing offered.
         var stopped = NowPlayingSnapshot()
         stopped.state = .stopped
         assert(!stopped.isLoaded && stopped.title == "Nothing playing" && stopped.identity == "idle")
         assert(!stopped.permits(.play))
 
-        // Playing with no metadata at all — Spotify does this in the gap between tracks.
         var blank = NowPlayingSnapshot()
         blank.state = .playing
         assert(blank.title == "Playback unavailable")
 
-        // A zero duration hides the scrubber rather than offering a seek into nothing.
         let unknownLength = sample(durationMilliseconds: 0)
         assert(unknownLength.duration == 0 && !unknownLength.permits(.seek(1)) && unknownLength.permits(.play))
     }
-
-    // MARK: Notification
 
     @MainActor static func checkNotificationParsing() throws {
         guard let parsed = NowPlayingSnapshot(spotifyNotification: broadcast()) else {
@@ -316,30 +282,23 @@ struct SpotifyPlaybackChecks {
         let paused = NowPlayingSnapshot(spotifyNotification: broadcast(state: "Paused"))
         assert(paused?.isPlaying == false && paused?.isLoaded == true)
 
-        // "Stopped" means nothing is loaded, whatever else the payload says.
         let stopped = NowPlayingSnapshot(spotifyNotification: broadcast(state: "Stopped"))
         assert(stopped?.isLoaded == false)
 
-        // Without a player state there is nothing to trust.
         assert(NowPlayingSnapshot(spotifyNotification: ["Name": "Juno"]) == nil)
 
-        // Missing optional keys degrade rather than crash.
         let sparse = NowPlayingSnapshot(spotifyNotification: ["Player State": "Playing"])
         assert(sparse?.name == "" && sparse?.duration == 0 && sparse?.isLoaded == false)
 
-        // Has Artwork = 0 means don't spend an Apple Event looking for a URL.
         let artless = NowPlayingSnapshot(spotifyNotification: broadcast(artwork: 0))
         assert(artless?.hasArtwork == false)
 
-        // Titles are arbitrary text; nothing here is delimiter-parsed, so punctuation is just punctuation.
         let awkward = NowPlayingSnapshot(spotifyNotification: broadcast(name: "a|b\u{1}c — “quoted” 🎧"))
         assert(awkward?.name == "a|b\u{1}c — “quoted” 🎧")
 
         let ad = NowPlayingSnapshot(spotifyNotification: broadcast(id: "spotify:ad:xyz", name: "Some Ad"))
         assert(ad?.isAd == true && ad?.title == "Advertisement" && ad?.permits(.next) == false)
     }
-
-    // MARK: Errors
 
     @MainActor static func checkErrorMapping() throws {
         assert(PlayerBridgeError(status: -1743) == .permissionDenied)
@@ -352,20 +311,16 @@ struct SpotifyPlaybackChecks {
         assert(PlayerBridgeError.notRunning.description(for: .music).contains("Apple Music"))
     }
 
-    // MARK: Controller
-
     @MainActor static func checkInitialReadAndCommands() async throws {
         let source = TestSource()
         source.next = .success(sample())
         let playback = playback(source)
         defer { playback.stop() }
 
-        // Nothing has broadcast yet, so the opening state comes from one Apple Event read.
         try await waitUntil { playback.state == .playing }
         assert(playback.title == "Track" && playback.duration == 200)
         assert(source.reads >= 1)
 
-        // Commands serialize: one in flight at a time, duplicates while busy ignored.
         source.next = .success(sample(playing: false))
         playback.send(.pause)
         playback.send(.pause)
@@ -375,7 +330,6 @@ struct SpotifyPlaybackChecks {
         assert(source.maximumActive == 1, "Reads and commands must not overlap")
         try await waitUntil { playback.state == .paused }
 
-        // A read that started before a command must not overwrite what the command produced.
         source.holdNext = true
         playback.boost(for: 0.05)
         try await waitUntil { source.held != nil }
@@ -393,7 +347,6 @@ struct SpotifyPlaybackChecks {
         try await waitUntil { playback.state == .idle }
         let readsBefore = source.reads
 
-        // A broadcast alone should move the whole widget, with no Apple Event read.
         playback.receive(notification: broadcast())
         assert(playback.state == .playing)
         assert(playback.title == "Juno" && playback.artist == "Sabrina Carpenter")
@@ -407,7 +360,6 @@ struct SpotifyPlaybackChecks {
         playback.receive(notification: broadcast(state: "Stopped"))
         assert(playback.state == .idle && playback.snapshot?.isLoaded == false)
 
-        // A payload with no player state is ignored rather than clearing the card.
         playback.receive(notification: broadcast())
         let before = playback.identity
         playback.receive(notification: ["Name": "nonsense"])
@@ -423,33 +375,26 @@ struct SpotifyPlaybackChecks {
         defer { playback.stop() }
         try await waitUntil { playback.state == .idle }
 
-        // First broadcast for a track: one artwork lookup, the one Apple Event normal use makes.
         playback.receive(notification: broadcast())
         try await waitUntil { source.artworkReads == 1 }
         try await waitUntil { playback.artworkKey == "https://i.scdn.co/image/one" }
 
-        // Repeat broadcasts for the same track (pause, resume, seek) must not look it up again.
         playback.receive(notification: broadcast(state: "Paused"))
         playback.receive(notification: broadcast(position: 130))
         try await Task.sleep(for: .milliseconds(80))
         assert(source.artworkReads == 1, "Artwork should be fetched once per track, not per broadcast")
 
-        // A new track fetches again.
         source.artwork = .success(.remote(URL(string: "https://i.scdn.co/image/two")!))
         playback.receive(notification: broadcast(id: "spotify:track:two", name: "Espresso"))
         try await waitUntil { source.artworkReads == 2 }
         try await waitUntil { playback.artworkKey == "https://i.scdn.co/image/two" }
 
-        // Has Artwork = 0 clears the slot without a lookup.
         playback.receive(notification: broadcast(id: "spotify:track:three", artwork: 0))
         try await waitUntil { playback.artworkKey == "idle" }
         assert(source.artworkReads == 2, "No artwork means no lookup")
 
-        // The displayed image trails the key until the replacement decodes.
         assert(playback.loadedArtworkKey == "idle")
 
-        // A lookup that fails — the Automation prompt still up, say — is not "no artwork": the next reading of the
-        // same track tries again.
         source.artwork = .failure(PlayerBridgeError.timedOut)
         playback.receive(notification: broadcast(id: "spotify:track:four"))
         try await waitUntil { source.artworkReads == 3 }
@@ -466,16 +411,13 @@ struct SpotifyPlaybackChecks {
         defer { playback.stop() }
         try await waitUntil { playback.state == .playing }
 
-        // A seek previews locally straight away, so the scrubber follows the thumb.
         source.commandFailure = PlayerBridgeError.timedOut
         playback.send(.seek(120))
         assert(abs(playback.elapsed - 120) < 0.001)
-        // When the command fails the preview rolls back rather than lying.
         try await waitUntil { !playback.busy }
         assert(abs(playback.elapsed - 10) < 1, "A failed seek should roll back")
         assert(playback.state == .commandError)
 
-        // A seek past the end is clamped to the track length before being sent.
         source.commandFailure = nil
         playback.retry()
         try await waitUntil { playback.state == .playing }
@@ -485,7 +427,6 @@ struct SpotifyPlaybackChecks {
     }
 
     @MainActor static func checkFailureStates() async throws {
-        // Spotify closed.
         let closed = TestSource()
         closed.next = .failure(PlayerBridgeError.notRunning)
         let first = playback(closed)
@@ -494,7 +435,6 @@ struct SpotifyPlaybackChecks {
         assert(!first.offers(.play))
         first.stop()
 
-        // Permission refused: a state the user has to resolve, so it does not retry in a tight loop.
         let denied = TestSource()
         denied.next = .failure(PlayerBridgeError.permissionDenied)
         let second = playback(denied)
@@ -506,7 +446,6 @@ struct SpotifyPlaybackChecks {
         assert(denied.reads == reads, "A refusal should not be retried on the poll interval")
         second.stop()
 
-        // Nothing loaded in a running Spotify.
         let empty = TestSource()
         empty.next = .failure(PlayerBridgeError.nothingPlaying)
         let third = playback(empty)
@@ -514,7 +453,6 @@ struct SpotifyPlaybackChecks {
         assert(!third.needsAttention)
         third.stop()
 
-        // A transient failure backs off but keeps trying, and recovers on its own.
         let flaky = TestSource()
         flaky.next = .failure(PlayerBridgeError.timedOut)
         let fourth = playback(flaky)
@@ -532,21 +470,18 @@ struct SpotifyPlaybackChecks {
         defer { playback.stop() }
         try await waitUntil { playback.state == .playing }
 
-        // Preview owns the card: live reading stops and the live snapshot is dropped.
         playback.setPreviewing(true)
         try await Task.sleep(for: .milliseconds(60))
         let duringPreview = source.reads
         try await Task.sleep(for: .milliseconds(120))
         assert(source.reads == duringPreview, "Preview must generate no Spotify traffic")
         assert(playback.snapshot == nil && !playback.offers(.play))
-        // A broadcast arriving during preview is ignored rather than fighting the sample data.
         playback.receive(notification: broadcast())
         assert(playback.snapshot == nil)
 
         playback.setPreviewing(false)
         try await waitUntil { playback.state == .playing }
 
-        // Sleep and lock suspend the same way.
         playback.setSuspended(true)
         try await Task.sleep(for: .milliseconds(60))
         let duringSleep = source.reads
@@ -555,14 +490,11 @@ struct SpotifyPlaybackChecks {
         playback.setSuspended(false)
         try await waitUntil { playback.state == .playing }
 
-        // Stopping is final.
         playback.stop()
         let afterStop = source.reads
         try await Task.sleep(for: .milliseconds(120))
         assert(source.reads == afterStop)
     }
-
-    // MARK: Apple Music
 
     @MainActor static func checkMusicNotificationParsing() throws {
         guard let parsed = NowPlayingSnapshot(notification: musicBroadcast(), from: .music) else {
@@ -575,20 +507,15 @@ struct SpotifyPlaybackChecks {
         assert(parsed.hasArtwork, "No artwork flag in the broadcast, so a loaded track is always worth one lookup")
         assert(!parsed.isAd && parsed.permits(.previous) && parsed.permits(.seek(1)))
 
-        // The broadcast's number and the Apple Event's hex text must name the same track, or every broadcast would
-        // look like a track change.
         assert(parsed.trackID == "music:1A2B3C4D5E6F7081")
         assert(NowPlayingSnapshot.musicTrackID(hex: "1a2b3c4d5e6f7081") == parsed.trackID)
-        // Persistent IDs use all 64 bits, so negative numbers turn up.
         let negative = NowPlayingSnapshot(musicNotification: musicBroadcast(persistentID: -2))
         assert(negative?.trackID == "music:FFFFFFFFFFFFFFFE")
         assert(NowPlayingSnapshot.musicTrackID(hex: "FFFFFFFFFFFFFFFE") == negative?.trackID)
-        // Leading zeros are kept either way.
         assert(NowPlayingSnapshot.musicTrackID(hex: "00000000000000FF") == NowPlayingSnapshot.musicTrackID(255))
 
         let paused = NowPlayingSnapshot(musicNotification: musicBroadcast(state: "Paused"))
         assert(paused?.isPlaying == false && paused?.isLoaded == true)
-        // Music sends a bare "Stopped" when the queue ends.
         let stopped = NowPlayingSnapshot(musicNotification: ["Player State": "Stopped"])
         assert(stopped?.isLoaded == false && stopped?.hasArtwork == false)
         assert(NowPlayingSnapshot(musicNotification: ["Name": "x"]) == nil)
@@ -606,27 +533,22 @@ struct SpotifyPlaybackChecks {
         try await waitUntil { playback.state == .playing }
         assert(playback.app == .music && playback.status == "Playing on Apple Music")
         assert(abs(playback.elapsed - 42) < 1)
-        // Embedded artwork is looked up once, and its key is what the ink choices remember.
         try await waitUntil { music.artworkReads == 1 && playback.artworkKey == "music:1A2B3C4D5E6F7081#artwork" }
 
-        // A broadcast for the same track (a pause) keeps the clock where it was instead of zeroing it…
         let readsBefore = music.reads
         music.next = .success(musicSample(playing: false, position: 43))
         playback.receive(notification: musicBroadcast(state: "Paused"), from: .music)
         assert(playback.state == .paused && playback.elapsed > 40, "Same track: the position carries over")
-        // …and asks for the real position straight away, since the broadcast couldn't say.
         try await waitUntil { music.reads > readsBefore }
         try await waitUntil { abs(playback.elapsed - 43) < 0.01 }
         assert(music.artworkReads == 1, "Same track: no second artwork lookup")
 
-        // A new track starts from zero until the read lands.
         music.next = .success(musicSample(id: 99, position: 5, name: "Save Your Tears"))
         playback.receive(notification: musicBroadcast(persistentID: 99, name: "Save Your Tears"), from: .music)
         assert(playback.title == "Save Your Tears" && playback.elapsed < 1)
         try await waitUntil { abs(playback.elapsed - 5) < 0.5 }
         try await waitUntil { music.artworkReads == 2 }
 
-        // Transport goes to Music.
         playback.send(.previous)
         try await waitUntil { !playback.busy }
         assert(music.sent == [.previous])
@@ -641,12 +563,10 @@ struct SpotifyPlaybackChecks {
         try await waitUntil { playback.state == .playing }
         assert(playback.app == .spotify && playback.title == "Track")
 
-        // Music pausing or stopping doesn't concern a card showing Spotify.
         playback.receive(notification: musicBroadcast(state: "Paused"), from: .music)
         playback.receive(notification: ["Player State": "Stopped"], from: .music)
         assert(playback.app == .spotify && playback.title == "Track")
 
-        // Music starting to play takes the card over, instantly.
         music.next = .success(musicSample())
         playback.receive(notification: musicBroadcast(), from: .music)
         assert(playback.app == .music && playback.title == "Blinding Lights" && playback.state == .playing)
@@ -654,19 +574,16 @@ struct SpotifyPlaybackChecks {
         try await waitUntil { !playback.busy }
         assert(music.sent == [.next] && spotify.sent.isEmpty, "Commands go to the app the card shows")
 
-        // Pausing Music keeps the card on Music; Spotify's paused broadcast is ignored.
         music.next = .success(musicSample(playing: false))
         playback.receive(notification: musicBroadcast(state: "Paused"), from: .music)
         spotify.next = .success(sample(playing: false))
         playback.receive(notification: broadcast(state: "Paused"))
         assert(playback.app == .music && playback.state == .paused)
 
-        // Spotify playing again takes it back.
         spotify.next = .success(sample())
         playback.receive(notification: broadcast())
         assert(playback.app == .spotify && playback.title == "Juno")
 
-        // A broadcast that never arrived: Spotify paused, Music playing. The safety-net read finds it.
         spotify.next = .success(sample(playing: false))
         music.next = .success(musicSample())
         playback.boost(for: 0.1)
@@ -682,13 +599,11 @@ struct SpotifyPlaybackChecks {
         defer { playback.stop() }
         try await waitUntil { playback.app == .spotify && playback.state == .playing }
 
-        // Spotify quits with Music still open: follow Music rather than showing "not running".
         open.remove(.spotify)
         spotify.next = .failure(PlayerBridgeError.notRunning)
         playback.boost(for: 0.1)
         try await waitUntil { playback.app == .music && playback.state == .paused }
 
-        // Neither open: one message naming both.
         open.remove(.music)
         music.next = .failure(PlayerBridgeError.notRunning)
         playback.boost(for: 0.1)

@@ -5,8 +5,6 @@ import Carbon
 final class GlobalHotKeys {
     private var handler: EventHandlerRef?
     private var keys: [EventHotKeyRef] = []
-    /// Called with the shortcut's index and whether it went down (true) or came back up (false). Hot keys don't
-    /// auto-repeat, so holding one is a single press followed, eventually, by its release.
     var action: ((UInt32, Bool) -> Void)?
 
     func register() -> [String] {
@@ -28,7 +26,6 @@ final class GlobalHotKeys {
         guard status == noErr else { return ["Cannot install shortcuts (\(status))."] }
         let bindings: [(UInt32, UInt32, String)] = [
             (UInt32(kVK_ANSI_Slash), UInt32(cmdKey), "⌘/"),
-            // Global, so these take ⌘-arrow from every app (line/document jumps) while Squidd runs — the user's choice.
             (UInt32(kVK_UpArrow), UInt32(cmdKey), "⌘↑"),
             (UInt32(kVK_LeftArrow), UInt32(cmdKey), "⌘←"),
             (UInt32(kVK_DownArrow), UInt32(cmdKey), "⌘↓"),

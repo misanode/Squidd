@@ -1,7 +1,6 @@
 import Foundation
 import CoreGraphics
 
-// Compile with WidgetGeometry.swift; no UI, account, or preference mutations.
 @main
 enum GeometryChecks {
     static func main() {

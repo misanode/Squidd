@@ -4,14 +4,8 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-	<!-- Album art from Spotify's image CDN. -->
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<!-- Reading the now-playing track from Spotify and Apple Music over Apple Events, and sending them transport
-	     commands. These access groups are the ones each app publishes in its scripting definition: Spotify's
-	     application class is in com.spotify.playback and its track class in com.spotify.library; Music's player
-	     is in com.apple.Music.playback and its track and artwork properties in com.apple.Music.library.read.
-	     Naming them here is the sanctioned App Sandbox mechanism, so no temporary exception is needed. -->
 	<key>com.apple.security.scripting-targets</key>
 	<dict>
 		<key>com.spotify.client</key>
@@ -25,12 +19,8 @@
 			<string>com.apple.Music.library.read</string>
 		</array>
 	</dict>
-	<!-- Lets macOS show the Automation prompt at all. With the Hardened Runtime on, tccd refuses to prompt an app
-	     without it ("Policy disallows prompt") and every Apple Event fails with -1743. The access groups above
-	     narrow what Squidd may do once allowed; this is what lets the user allow it in the first place. -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
-	<!-- Reading a mascot GIF the user picks in the open panel. -->
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 </dict>

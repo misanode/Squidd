@@ -56,20 +56,13 @@ final class MascotFrames {
         let delay: Double
     }
     private(set) var frames: [Frame] = []
-    /// Average visual center of the frames, as a fraction of their height from the top.
     private(set) var visualCenterY = 0.5
-    /// True until the first load finishes, so the slot stays empty rather than flashing the fallback note.
     private(set) var loading = true
     var index = 0
     var remaining: Double = 0
 
-    /// The last mascot decoded. The pill rebuilds this view every time the mascot is shown, and a long GIF takes the
-    /// better part of a second to decode, so showing it again reuses these frames instead. One entry: a newly chosen
-    /// mascot gets a new file name, so it replaces the old frames rather than piling up.
     private static var cache: (url: URL, frames: [Frame], centerY: Double)?
 
-    /// Longest side frames are kept at: about three times the 35-point slot, so they stay sharp once cropped, while a
-    /// few hundred frames still fit in tens of megabytes.
     nonisolated private static let framePixels = 200
 
     func load(customURL: URL?) async {
@@ -90,7 +83,6 @@ final class MascotFrames {
         loading = false
     }
 
-    /// Reads, shrinks and crops every frame. Runs off the main thread: it's the slow part of showing a mascot.
     nonisolated private static func decode(_ url: URL) -> (frames: [(image: CGImage, delay: Double)], centerY: Double) {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return ([], 0.5) }
         let decoded: [(image: CGImage, delay: Double)] = (0..<CGImageSourceGetCount(source)).compactMap { index in
@@ -100,13 +92,11 @@ final class MascotFrames {
             let delay = (gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double) ?? (gif?[kCGImagePropertyGIFDelayTime] as? Double) ?? 0.1
             return (shrunk(image), max(0.02, delay))
         }
-        // One crop shared by every frame, so the visible content is centered without jittering between frames.
         let layout = visibleLayout(of: decoded.map(\.image))
         let cropped = decoded.map { frame in (layout.box.flatMap { frame.image.cropping(to: $0) } ?? frame.image, frame.delay) }
         return (cropped, layout.centerY)
     }
 
-    /// Redraws a frame no larger than `framePixels`, as a ready-to-draw bitmap.
     nonisolated private static func shrunk(_ image: CGImage) -> CGImage {
         let scale = min(1, Double(framePixels) / Double(max(image.width, image.height)))
         let width = max(1, Int(Double(image.width) * scale)), height = max(1, Int(Double(image.height) * scale))
@@ -118,8 +108,6 @@ final class MascotFrames {
         return context.makeImage() ?? image
     }
 
-    /// Moves the frames so their average visual center, not their box center, sits mid-slot.
-    /// Capped at a fifth of the slot so tall poses stay inside the launcher.
     func verticalOffset(in slot: CGSize) -> CGFloat {
         guard let size = frames.first?.image.size, size.width > 0, size.height > 0 else { return 0 }
         let rendered = min(slot.height, slot.width * size.height / size.width)
@@ -127,12 +115,9 @@ final class MascotFrames {
         return min(slot.height / 5, max(-slot.height / 5, offset))
     }
 
-    /// Box around the non-transparent pixels of all frames (top-left pixel coordinates; nil when there is
-    /// no transparent margin to trim), and the frames' average alpha-weighted center as a fraction of its height.
     nonisolated static func visibleLayout(of images: [CGImage]) -> (box: CGRect?, centerY: Double) {
         guard let first = images.first,
               images.allSatisfy({ $0.width == first.width && $0.height == first.height }) else { return (nil, 0.5) }
-        // Measure on a small copy; single-pixel precision doesn't matter in a 35-point slot.
         let scale = min(1, 128 / Double(max(first.width, first.height)))
         let width = max(1, Int(Double(first.width) * scale)), height = max(1, Int(Double(first.height) * scale))
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -197,7 +182,6 @@ struct AnimatedMascotView: View {
             .offset(y: frames.verticalOffset(in: slot.size))
         }
         .task(id: customURL) { await frames.load(customURL: customURL) }
-        // Restarts once frames arrive, since a first-time load finishes after playback may already be running.
         .task(id: playing && !reduceMotion && !frames.frames.isEmpty) {
             if playing && !reduceMotion { await frames.run() }
         }
@@ -222,7 +206,6 @@ struct PlaybackRim: View {
                 let rect = CGRect(origin: .zero, size: size).insetBy(dx: 0.75, dy: 0.75)
                 let outline = Capsule().path(in: rect)
                 let phase = (time / 8).truncatingRemainder(dividingBy: 1)
-                // Continuous shading avoids overlapping short strokes and visible stepping.
                 for index in 0..<2 {
                     let position = (phase + Double(index) * 0.5).truncatingRemainder(dividingBy: 1)
                     let center = perimeterPoint(position, in: rect)
@@ -238,7 +221,6 @@ struct PlaybackRim: View {
             }
 
             ZStack {
-                // A quiet glass edge stays visible while playback is paused.
                 Capsule().strokeBorder(
                     LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.12), .white.opacity(0.3)],
                                    startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.6)
@@ -256,7 +238,6 @@ struct PlaybackRim: View {
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: playing)
         }
-        // Preserve the light's position across pause/resume, without a polling task.
         .onChange(of: moving, initial: true) { _, moving in
             if moving {
                 started = Date()
@@ -269,7 +250,6 @@ struct PlaybackRim: View {
         .accessibilityHidden(true)
     }
 
-    /// Arc-length positioning keeps the highlights moving evenly across straights and curves.
     private func perimeterPoint(_ fraction: Double, in rect: CGRect) -> CGPoint {
         let radius = rect.height / 2
         let straight = max(0, rect.width - rect.height)
@@ -355,7 +335,6 @@ struct TransportButton: View {
             pressed = true
             action()
         } label: {
-            // The press fills with the outline's own color — white, or dark grey under dark ink — not the gray primary.
             TransportGlyph(kind: kind)
                 .fill(.foreground)
                 .opacity(pressed ? 1 : 0)

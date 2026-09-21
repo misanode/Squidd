@@ -1,6 +1,5 @@
 import Foundation
 
-/// Talks to the Spotify app over Apple Events. An actor, so the sends serialize and stay off the main thread.
 actor SpotifyEventBridge: NowPlayingSource {
     private var client: AppleEventClient
     private let timeout: TimeInterval
@@ -15,7 +14,6 @@ actor SpotifyEventBridge: NowPlayingSource {
         guard MusicApp.spotify.isRunning else { throw PlayerBridgeError.notRunning }
     }
 
-    /// The first answered event means the Automation prompt, if there was one, is behind us: back to short timeouts.
     private func noteAnswered() {
         guard !answered else { return }
         answered = true
@@ -27,7 +25,6 @@ actor SpotifyEventBridge: NowPlayingSource {
         var snapshot = NowPlayingSnapshot()
         snapshot.state = try client.playerState()
         noteAnswered()
-        // Stopped means nothing is loaded; the remaining reads would only fail.
         guard snapshot.state != .stopped else { return snapshot }
         snapshot.positionSeconds = (try? client.number(of: "pPos")) ?? 0
         do {
@@ -40,17 +37,13 @@ actor SpotifyEventBridge: NowPlayingSource {
             snapshot.artworkURL = URL(string: artwork)
             snapshot.hasArtwork = snapshot.artworkURL != nil
         } catch PlayerBridgeError.nothingPlaying {
-            // Spotify says it is playing but exposes no track: an ad or a gap between tracks.
             return snapshot
         }
         return snapshot
     }
 
-    /// Fetches only the artwork URL. This is the one field the notification omits, so it is the one Apple Event a
-    /// running Squidd makes in normal use — once per track change.
     func artwork(for trackID: String) async throws -> ArtworkReference? {
         try ready()
-        // "No such object" means the track has no artwork; anything else is a failure worth retrying.
         do {
             return URL(string: try client.trackText("aUrl")).map(ArtworkReference.remote)
         } catch PlayerBridgeError.nothingPlaying {

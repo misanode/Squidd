@@ -6,7 +6,6 @@ protocol ArtworkLoading: Sendable {
     func image(for artwork: ArtworkReference) async throws -> CGImage
 }
 
-/// Shared by the two panels. Network and thumbnail decoding run off MainActor.
 actor ArtworkCache: ArtworkLoading {
     private var images: [String: CGImage] = [:]
     private var recency: [String] = []

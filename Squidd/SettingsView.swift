@@ -4,17 +4,13 @@ import ImageIO
 import ServiceManagement
 import UniformTypeIdentifiers
 
-/// What Settings asks of the rest of the app.
 struct SettingsActions {
     var close: () -> Void = {}
     var resetPosition: () -> Void = {}
-    // TEMPORARY: back the right-click sizing menu while the panel's final size is being settled.
     var saveDefaultSize: () -> Void = {}
     var resetSize: () -> Void = {}
 }
 
-/// A standard window drawn edge to edge: the traffic lights stay native, and the design's title, tabs and content
-/// card fill the rest.
 @MainActor
 final class SettingsWindow: NSWindow {
     init(size: CGSize) {
@@ -24,11 +20,9 @@ final class SettingsWindow: NSWindow {
         title = "Squidd Settings"
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
-        // An empty compact toolbar makes the title bar tall enough to center the traffic lights beside the title.
         toolbar = NSToolbar(identifier: "SquiddSettings")
         toolbarStyle = .unifiedCompact
         isMovableByWindowBackground = true
-        // Clear so the dark glass behind the tabs shows what's under the window.
         isOpaque = false
         backgroundColor = .clear
         appearance = NSAppearance(named: .darkAqua)
@@ -45,8 +39,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: String { "tab-\(rawValue.lowercased())" }
 }
 
-// Title, tab bar and a dark card holding the selected tab. Each tab lays its rows out with the design's gaps and
-// shares any extra height between them, so a taller window spreads the rows out; a shorter one scrolls.
 struct SettingsView: View {
     static let defaultSize = CGSize(width: 448, height: 500)
     static let minimumSize = CGSize(width: 448, height: 360)
@@ -54,20 +46,17 @@ struct SettingsView: View {
     @Bindable var store: AppStore
     var actions: SettingsActions
     @State private var tab: SettingsTab
-    // Not wired up yet: comes after the redesign. The player already floats above other windows.
     @State private var keepOnTop = true
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     init(store: AppStore, actions: SettingsActions = SettingsActions()) {
         _store = Bindable(store)
         self.actions = actions
-        // Settings opens by itself when a music app needs attention, so start on the tab that fixes that.
         _tab = State(initialValue: store.playback.needsAttention ? .music : .general)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Shares the title bar with the traffic lights.
             Text("Squidd Settings").font(SettingsStyle.font(12.5))
                 .frame(height: 42)
                 .accessibilityAddTraits(.isHeader)
@@ -80,22 +69,16 @@ struct SettingsView: View {
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         .background { Button("Close", action: actions.close).keyboardShortcut(.cancelAction).hidden() }
-        // TEMPORARY: sizing controls while the panel's final size is being settled.
         .contextMenu {
             Button("Set Current Size as Default", action: actions.saveDefaultSize)
             Button("Reset Size", action: actions.resetSize)
         }
     }
 
-    // MARK: Chrome
-
-    /// Dark Liquid Glass around the card; Reduce Transparency falls back to the design's solid grey.
     @ViewBuilder private var glass: some View {
         if reduceTransparency {
             SettingsStyle.window
         } else {
-            // Glass alone lets text in windows behind read through the title and tabs. A thick material under it
-            // blurs that into soft color, and a dark tint keeps the white labels on top readable.
             ZStack {
                 Rectangle().fill(.ultraThickMaterial)
                 Color.black.opacity(0.35)
@@ -144,7 +127,6 @@ struct SettingsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
-    /// The design's gaps as a minimum; a taller card stretches them, and a shorter one scrolls instead.
     private func page<Content: View>(leading: CGFloat = 31, trailing: CGFloat = 31, bottom: CGFloat,
                                      @ViewBuilder _ content: () -> Content) -> some View {
         let rows = SpreadStack(bottom: bottom) { content() }
@@ -161,12 +143,10 @@ struct SettingsView: View {
     }
 
     private func label(_ text: String) -> some View {
-        // SF Pro runs wider than the design's SF Compact, so a long label shrinks a little before it truncates.
         Text(text).font(SettingsStyle.label).foregroundStyle(SettingsStyle.secondary).lineLimit(1)
             .minimumScaleFactor(0.8)
     }
 
-    /// Icon, description and the row's control at the trailing edge.
     private func row<Control: View>(_ icon: String, _ text: String, spacing: CGFloat = 5.5,
                                     @ViewBuilder control: () -> Control) -> some View {
         HStack(spacing: 0) {
@@ -185,13 +165,10 @@ struct SettingsView: View {
             .textSelection(.enabled)
     }
 
-    // MARK: General
-
     private var general: some View {
         page(leading: 38, trailing: 43, bottom: 17.5) {
             header("Updates").gap(47)
             row("general-version", "Squidd version \(Self.version)") {
-                // Not wired up yet: comes after the redesign.
                 Button("Check For Updates") {}.buttonStyle(OutlineButtonStyle(width: 97.5))
             }
             .gap(20)
@@ -241,11 +218,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: Music
-
-    /// Squidd reads Spotify or Apple Music on this Mac over Apple Events, so there is nothing to set up beyond
-    /// letting macOS allow it. The first row follows whichever app the card shows and offers the one fix it needs;
-    /// the toggles below show permission for each app, since macOS asks about each separately.
     private var music: some View {
         page(bottom: 33) {
             header("Music").gap(50)
@@ -291,12 +263,9 @@ struct SettingsView: View {
         }
     }
 
-    /// Does whatever stands between Squidd and `app`: opening it, asking macOS, or sending the user to System
-    /// Settings once they have refused.
     private func fix(_ app: MusicApp) {
         switch Automation.permission(for: app) {
         case .appNotRunning: app.open()
-        // Asking shows the system prompt; the answer lands in the next reading either way.
         case .notAsked:
             _ = Automation.permission(for: app, askIfNeeded: true)
             store.playback.retry()
@@ -305,16 +274,12 @@ struct SettingsView: View {
         }
     }
 
-    /// Reflects one app's Automation permission. It can be turned on (which prompts, or sends the user to System
-    /// Settings once they have refused) but not off — only macOS can revoke it.
     private func automationAllowed(_ app: MusicApp) -> Binding<Bool> {
         Binding(get: { Automation.permission(for: app) == .granted }, set: { on in
             guard on else { Automation.openPrivacySettings(); return }
             fix(app)
         })
     }
-
-    // MARK: Appearance
 
     private var appearance: some View {
         page(leading: 30, trailing: 30, bottom: 24.5) {
@@ -342,7 +307,6 @@ struct SettingsView: View {
                 mascotPreview
                 label("Mascot appears in the pill").padding(.leading, 4)
                 Spacer(minLength: 12)
-                // Keeps its slot when hidden so the row doesn't shift.
                 Button("Remove") { store.resetCustomMascot() }
                     .buttonStyle(OutlineButtonStyle(width: 44.5))
                     .accessibilityLabel("Remove mascot")
@@ -408,7 +372,6 @@ struct SettingsView: View {
             Spacer(minLength: 6).frame(maxWidth: 12)
             captioned("Pill") { Icon("appearance-accent-pill") }
             Spacer(minLength: 6).frame(maxWidth: 12)
-            // The ring's primary color is the logo's, so only its highlight is picked here.
             captioned {
                 swatches([(store.rimAccentColor, "Pill highlight", { store.rimAccentHex = $0.hexString })])
             }
@@ -422,7 +385,6 @@ struct SettingsView: View {
         }
     }
 
-    /// A caption over the control, or an empty caption's worth of space, so every control shares a center line.
     private func captioned<Content: View>(_ caption: String? = nil, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(spacing: 3) {
             label(caption ?? " ").opacity(caption == nil ? 0 : 1).accessibilityHidden(caption == nil)
@@ -453,8 +415,6 @@ struct SettingsView: View {
         .accessibilityHidden(true)
     }
 
-    // MARK: Keybinds
-
     private var keybinds: some View {
         page(leading: 29.5, trailing: 65, bottom: 29) {
             header("Music Player").gap(29)
@@ -469,7 +429,6 @@ struct SettingsView: View {
         }
     }
 
-    /// `degrees` turns the up arrow; the chevron's artwork points down, so it turns half a turn further.
     private func keybind(chevron degrees: Double, _ text: String) -> some View {
         keybind(icon: "keybind-chevron", rotation: degrees + 180, text, labelGap: 18, key: "keybind-arrow",
                 keyRotation: degrees)
@@ -491,8 +450,6 @@ struct SettingsView: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: Actions
-
     private func firstFrame(of url: URL) -> NSImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0,
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
@@ -508,7 +465,6 @@ struct SettingsView: View {
     }
 }
 
-/// The pill picker's choices: which of the album cover and the mascot sit beside the logo.
 private enum PillLayout: CaseIterable, Identifiable {
     case logo, mascot, album, both
 
@@ -533,13 +489,11 @@ private enum SettingsStyle {
     static let secondary = Color.white.opacity(0.5)
     static let errorText = Color(red: 1.0, green: 0.42, blue: 0.40)
     static let label = font(7.5, .regular)
-    /// Points per unit in the design's SVG exports.
     static let unit: CGFloat = 0.162
 
     static func font(_ size: CGFloat, _ weight: Font.Weight = .medium) -> Font { .system(size: size, weight: weight) }
 }
 
-/// One of the design's SVGs at the design's scale.
 private struct Icon: View {
     var name: String
     var scale: CGFloat
@@ -562,17 +516,13 @@ nonisolated private struct SpreadGap: LayoutValueKey {
 }
 
 private extension View {
-    /// Space above this row in its tab, at the design's size.
     func gap(_ value: CGFloat) -> some View { layoutValue(key: SpreadGap.self, value: value) }
 
-    /// Hides a control but keeps its space, so neighbouring controls don't move.
     func shown(_ visible: Bool) -> some View {
         opacity(visible ? 1 : 0).disabled(!visible).accessibilityHidden(!visible)
     }
 }
 
-/// Stacks full-width rows with the gap each one asks for, then shares any extra height between the gaps in
-/// proportion, so a taller card spreads the rows the way the design spaces them.
 private struct SpreadStack: Layout {
     var bottom: CGFloat
 
@@ -604,7 +554,6 @@ private struct SpreadStack: Layout {
     private func gaps(_ subviews: Subviews) -> [CGFloat] { subviews.map { $0[SpreadGap.self] } + [bottom] }
 }
 
-/// The design's outlined capsule.
 private struct OutlineButtonStyle: ButtonStyle {
     var width: CGFloat
     @Environment(\.isEnabled) private var isEnabled
@@ -622,7 +571,6 @@ private struct OutlineButtonStyle: ButtonStyle {
     }
 }
 
-/// The design's outlined switch: the knob sits right when on; off dims it to the left.
 private struct SwitchStyle: ToggleStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -660,14 +608,12 @@ private struct ColorSwatch: View {
     }
 }
 
-// Routes the shared color panel to whichever swatch opened it last.
 private final class ColorPanelBridge: NSObject {
     static let shared = ColorPanelBridge()
     private var onChange: ((Color) -> Void)?
 
     func open(initial: Color, onChange: @escaping (Color) -> Void) {
         let panel = NSColorPanel.shared
-        // Detach first so setting the starting color isn't reported to the previous swatch.
         panel.setTarget(nil)
         panel.setAction(nil)
         panel.showsAlpha = false

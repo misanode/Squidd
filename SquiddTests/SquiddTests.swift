@@ -1,10 +1,3 @@
-//
-//  SquiddTests.swift
-//  SquiddTests
-//
-//  Created by Misael Taperia on 9/18/26.
-//
-
 import XCTest
 @testable import Squidd
 

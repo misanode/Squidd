@@ -26,8 +26,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         windows = WindowCoordinator(store: AppStore())
         windows?.show()
-        // Nothing to set up any more, so Settings only opens when macOS hasn't been asked for permission to drive
-        // an open music app and Squidd can't drive any yet — the one thing a new install still needs from the user.
         let permissions = MusicApp.allCases.map { Automation.permission(for: $0) }
         if !permissions.contains(.granted) && permissions.contains(.notAsked) { windows?.showSettings() }
     }

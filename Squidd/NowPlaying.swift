@@ -7,8 +7,6 @@ nonisolated enum PlaybackCommand: Equatable, Sendable {
     case play, pause, previous, next, seek(Double)
 }
 
-/// The music apps Squidd can follow. Both are read the same way — Apple Events plus the app's own broadcast — and
-/// Squidd shows whichever one most recently started playing.
 nonisolated enum MusicApp: String, CaseIterable, Sendable {
     case spotify, music
 
@@ -26,7 +24,6 @@ nonisolated enum MusicApp: String, CaseIterable, Sendable {
         }
     }
 
-    /// The distributed notification the app posts on every play, pause and track change.
     var broadcast: Notification.Name {
         switch self {
         case .spotify: .init("com.spotify.client.PlaybackStateChanged")
@@ -39,8 +36,6 @@ nonisolated enum MusicApp: String, CaseIterable, Sendable {
         self = match
     }
 
-    /// Apps are only addressed while already running — addressing a stopped app would launch it, and Squidd opening
-    /// a music app on its own would be a surprise.
     var isRunning: Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
     }
@@ -51,20 +46,14 @@ nonisolated enum MusicApp: String, CaseIterable, Sendable {
     }
 }
 
-/// What Squidd needs from a music app. Spotify and Apple Music each have one.
 protocol NowPlayingSource: Sendable {
     func snapshot() async throws -> NowPlayingSnapshot?
-    /// Fetched on its own because neither app's broadcast includes it: Spotify's is a URL, Apple Music's is the
-    /// image itself, which is too heavy to read on every poll.
     func artwork(for trackID: String) async throws -> ArtworkReference?
     func send(_ command: PlaybackCommand) async throws
 }
 
-/// Where a track's cover comes from. `key` identifies the image for caching and for per-artwork ink choices.
 nonisolated enum ArtworkReference: Equatable, Sendable {
-    /// Spotify: an `i.scdn.co` link.
     case remote(URL)
-    /// Apple Music: the image bytes, read straight out of the app.
     case embedded(key: String, data: Data)
 
     var key: String {
@@ -75,30 +64,18 @@ nonisolated enum ArtworkReference: Equatable, Sendable {
     }
 }
 
-// MARK: - Snapshot
-
-/// One reading of a music app's player. Built either from the app's broadcast (free, and how most readings arrive)
-/// or from Apple Events (at launch, and as a safety net).
 nonisolated struct NowPlayingSnapshot: Equatable, Sendable {
     enum PlayState: Sendable, Equatable { case playing, paused, stopped }
 
     var app: MusicApp = .spotify
     var state: PlayState = .stopped
-    /// Spotify: `spotify:track:…`, and also `spotify:ad:…` or `spotify:local:…`, which is how ads and local files
-    /// are spotted. Apple Music: `music:` and the track's persistent ID.
     var trackID = ""
     var name = ""
     var artist = ""
     var album = ""
-    /// Spotify only; Apple Music hands over image bytes instead, through `NowPlayingSource.artwork(for:)`.
     var artworkURL: URL?
     var hasArtwork = false
-    /// Spotify reports duration in **milliseconds**, though its scripting dictionary says seconds. Both the Apple
-    /// Event and the notification agree on milliseconds; `duration` does the conversion. Apple Music's broadcast
-    /// also uses milliseconds, its Apple Events seconds, and its bridge converts.
     var durationMilliseconds: Double = 0
-    /// Seconds — unlike `durationMilliseconds`. Nil when the reading didn't include one: Apple Music's broadcast
-    /// leaves the position out.
     var positionSeconds: Double? = 0
 
     var isPlaying: Bool { state == .playing }
@@ -115,16 +92,12 @@ nonisolated struct NowPlayingSnapshot: Equatable, Sendable {
         return isPlaying ? "Playback unavailable" : "Nothing playing"
     }
 
-    /// Neither scripting interface says which commands the current item allows, so anything loaded and not an ad
-    /// is fair game; the app simply ignores a command it cannot honor.
     func permits(_ command: PlaybackCommand) -> Bool {
         guard isLoaded, !isAd else { return false }
         if case .seek = command { return duration > 0 }
         return true
     }
 
-    /// Apple Music's persistent IDs arrive as hex text over Apple Events and as a number in the broadcast. Both are
-    /// normalized to the same 16-digit uppercase form so a track keeps one identity whichever way it was read.
     static func musicTrackID(_ persistentID: UInt64) -> String {
         let hex = String(persistentID, radix: 16, uppercase: true)
         return "music:" + String(repeating: "0", count: max(0, 16 - hex.count)) + hex
@@ -143,8 +116,6 @@ extension NowPlayingSnapshot {
         }
     }
 
-    /// Keys Spotify puts in its `PlaybackStateChanged` notification. Verified live; `userInfo` survives the App
-    /// Sandbox intact, so a state change needs no Apple Event at all.
     init?(spotifyNotification userInfo: [AnyHashable: Any]) {
         guard let state = Self.playState(userInfo) else { return nil }
         self.state = state
@@ -154,13 +125,9 @@ extension NowPlayingSnapshot {
         album = userInfo["Album"] as? String ?? ""
         durationMilliseconds = (userInfo["Duration"] as? NSNumber)?.doubleValue ?? 0
         positionSeconds = (userInfo["Playback Position"] as? NSNumber)?.doubleValue ?? 0
-        // The one thing the notification leaves out is the artwork URL; `Has Artwork` says whether fetching one is
-        // worth an Apple Event.
         hasArtwork = ((userInfo["Has Artwork"] as? NSNumber)?.boolValue ?? false)
     }
 
-    /// Keys Apple Music puts in `com.apple.Music.playerInfo`. It carries no playback position, so the controller
-    /// reads that over Apple Events, and no artwork flag, so artwork is always looked up once per track.
     init?(musicNotification userInfo: [AnyHashable: Any]) {
         guard let state = Self.playState(userInfo) else { return nil }
         app = .music
@@ -186,8 +153,6 @@ extension NowPlayingSnapshot {
     }
 }
 
-// MARK: - Errors
-
 nonisolated enum PlayerBridgeError: Error, Equatable {
     case notRunning
     case permissionDenied
@@ -205,23 +170,17 @@ nonisolated enum PlayerBridgeError: Error, Equatable {
         }
     }
 
-    /// Apple Event result codes Squidd can say something useful about.
     init(status: OSStatus) {
         switch status {
-        case -1743: self = .permissionDenied            // errAEEventNotPermitted — Automation refused in Privacy.
-        case -600, -609: self = .notRunning             // procNotFound / connectionInvalid.
-        case -1712: self = .timedOut                    // errAETimeout.
-        case -1728: self = .nothingPlaying              // errAENoSuchObject — no current track.
+        case -1743: self = .permissionDenied
+        case -600, -609: self = .notRunning
+        case -1712: self = .timedOut
+        case -1728: self = .nothingPlaying
         default: self = .failed(status)
         }
     }
 }
 
-// MARK: - Apple Event plumbing
-
-/// Raw Apple Events, deliberately not `NSAppleScript`. Measured on this machine: `NSAppleScript` costs ~62 ms a read
-/// and **deadlocks** anywhere but the main thread (even on a thread with a run loop, and a stuck call takes the whole
-/// process's AppleScript component down with it). Raw events run off the main actor and cost ~8 ms.
 nonisolated enum AppleEvents {
     static func code(_ value: String) -> OSType {
         var result: OSType = 0
@@ -229,13 +188,11 @@ nonisolated enum AppleEvents {
         return result
     }
 
-    /// `<property> of <container>`, as an object specifier.
     static func property(_ property: OSType, of container: NSAppleEventDescriptor) -> NSAppleEventDescriptor {
         specifier(want: code("prop"), form: code("prop"), data: NSAppleEventDescriptor(typeCode: property),
                   of: container)
     }
 
-    /// `<class> <index> of <container>`, as an object specifier — `artwork 1 of current track`, say.
     static func element(_ elementClass: OSType, index: Int32,
                         of container: NSAppleEventDescriptor) -> NSAppleEventDescriptor {
         specifier(want: elementClass, form: code("indx"), data: NSAppleEventDescriptor(int32: index), of: container)
@@ -248,27 +205,19 @@ nonisolated enum AppleEvents {
         record.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
         record.setDescriptor(NSAppleEventDescriptor(enumCode: form), forKeyword: AEKeyword(keyAEKeyForm))
         record.setDescriptor(data, forKeyword: AEKeyword(keyAEKeyData))
-        // Force-unwrapped deliberately: this coercion is a fixed shape that cannot fail at runtime.
         return record.coerce(toDescriptorType: code("obj "))!
     }
 }
 
-/// Sends Apple Events to one app. Spotify and Apple Music share their player vocabulary — `player state`,
-/// `player position`, `current track` and its `name`, `artist`, `album` and `duration` all use the same codes — so
-/// the reads live here and each bridge adds only what differs.
 nonisolated struct AppleEventClient: Sendable {
     let app: MusicApp
     let timeout: TimeInterval
     private static let log = Logger(subsystem: "com.squidd", category: "AppleEvents")
 
-    /// How long the first event to an app may wait. macOS holds that event while its Automation prompt is on screen,
-    /// so a short timeout expires before the user can click Allow. Once one event has been answered the bridges
-    /// switch to `timeout`.
     static let firstContactTimeout: TimeInterval = 60
 
     func with(timeout: TimeInterval) -> AppleEventClient { AppleEventClient(app: app, timeout: timeout) }
 
-    /// Addressed by bundle identifier rather than pid, so a relaunched app needs no rebinding.
     func event(_ eventClass: String, _ eventID: String) -> NSAppleEventDescriptor {
         NSAppleEventDescriptor.appleEvent(
             withEventClass: AppleEvents.code(eventClass), eventID: AppleEvents.code(eventID),
@@ -278,8 +227,6 @@ nonisolated struct AppleEventClient: Sendable {
 
     func playerState() throws -> NowPlayingSnapshot.PlayState {
         let value = try get(AppleEvents.property(AppleEvents.code("pPlS"), of: .null()))
-        // `player state` is an enumerator, not text: kPSP playing, kPSp paused, kPSS stopped. Apple Music adds
-        // kPSF / kPSR for fast-forwarding and rewinding, which are still playing as far as the card is concerned.
         switch value.enumCodeValue {
         case AppleEvents.code("kPSP"), AppleEvents.code("kPSF"), AppleEvents.code("kPSR"): return .playing
         case AppleEvents.code("kPSp"): return .paused
@@ -319,7 +266,6 @@ nonisolated struct AppleEventClient: Sendable {
         request.setParam(specifier, forKeyword: AEKeyword(keyDirectObject))
         let reply = try perform(request)
         guard let value = reply?.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)) else {
-            // A reply with no direct object means the app had nothing to give.
             throw PlayerBridgeError.nothingPlaying
         }
         return value
@@ -329,7 +275,6 @@ nonisolated struct AppleEventClient: Sendable {
     func perform(_ event: NSAppleEventDescriptor) throws -> NSAppleEventDescriptor? {
         do {
             let reply = try event.sendEvent(options: [.waitForReply], timeout: timeout)
-            // A delivered event can still carry a refusal in its reply rather than throwing.
             if let failure = reply.paramDescriptor(forKeyword: AEKeyword(keyErrorNumber))?.int32Value, failure != 0 {
                 throw failed(event, status: OSStatus(failure))
             }
@@ -341,8 +286,6 @@ nonisolated struct AppleEventClient: Sendable {
         }
     }
 
-    /// Logs a refused or failed event — which app, which event, which property — so a problem reported from a real
-    /// Mac can be traced with `log show --predicate 'subsystem == "com.squidd"'`.
     private func failed(_ event: NSAppleEventDescriptor, status: OSStatus) -> PlayerBridgeError {
         let name = { (code: OSType) in String(bytes: withUnsafeBytes(of: code.bigEndian, Array.init), encoding: .macOSRoman) ?? "?" }
         let property = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?
@@ -355,10 +298,6 @@ nonisolated struct AppleEventClient: Sendable {
     }
 }
 
-// MARK: - Automation permission
-
-/// Whether macOS will let Squidd drive a music app. Checked without prompting, so Settings can describe the situation
-/// and the prompt only appears when the user asks for it. Each app has its own permission.
 nonisolated enum Automation {
     enum Permission: Equatable, Sendable { case granted, denied, notAsked, appNotRunning }
 
@@ -368,13 +307,12 @@ nonisolated enum Automation {
         guard let descriptor = target.aeDesc else { return .notAsked }
         switch AEDeterminePermissionToAutomateTarget(descriptor, typeWildCard, typeWildCard, askIfNeeded) {
         case noErr: return .granted
-        case OSStatus(-1744): return .notAsked         // errAEEventWouldRequireUserConsent
-        case OSStatus(-1743): return .denied           // errAEEventNotPermitted
+        case OSStatus(-1744): return .notAsked
+        case OSStatus(-1743): return .denied
         default: return .denied
         }
     }
 
-    /// Privacy & Security ▸ Automation, for when permission was refused and only the user can undo that.
     static func openPrivacySettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
         else { return }

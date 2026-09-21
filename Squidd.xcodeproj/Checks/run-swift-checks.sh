@@ -1,6 +1,5 @@
 #!/bin/bash
 set -euo pipefail
-# Optional source directory lets staged changes be checked before installation.
 checks_dir="$(cd "$(dirname "$0")" && pwd)"
 source_dir="${1:-$checks_dir/../../Squidd}"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
