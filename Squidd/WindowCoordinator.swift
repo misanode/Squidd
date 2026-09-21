@@ -50,7 +50,6 @@ final class WindowCoordinator: NSObject {
     private var pointerOrigin = CGPoint.zero
     private var dragging = false
     private var interacting = false
-    private var resizeCorner: CardCorner?
     private var saveTask: Task<Void, Never>?
     private var pointerTimer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -265,26 +264,9 @@ final class WindowCoordinator: NSObject {
     }
     #endif
 
-    func saveDefaultSize() {
-        defaults.set([card.frame.width, card.frame.height], forKey: "defaultPanelSize")
-    }
-
-    func resetSize() {
-        var frame = card.frame
-        frame.size = defaultSize
-        place(frame, screen: bestScreen(for: card.frame))
-    }
-
-    private var defaultSize: CGSize {
-        if let size = defaults.array(forKey: "defaultPanelSize") as? [Double], size.count == 2,
-           size.allSatisfy({ $0.isFinite && $0 > 0 }) { return CGSize(width: size[0], height: size[1]) }
-        return WidgetMetrics.card
-    }
-
-    func beginDrag(corner: CardCorner? = nil, onLogo: Bool = false) {
+    func beginDrag(onLogo: Bool = false) {
         pointerOrigin = NSEvent.mouseLocation
         originalFrame = card.frame
-        resizeCorner = corner
         dragging = false
         interacting = true
         card.ignoresMouseEvents = false; launcher.ignoresMouseEvents = false
@@ -296,20 +278,16 @@ final class WindowCoordinator: NSObject {
         let delta = CGPoint(x: pointer.x - pointerOrigin.x, y: pointer.y - pointerOrigin.y)
         dragging = dragging || abs(delta.x) > 4 || abs(delta.y) > 4
         if dragging { setLogoPressed(false) }
-        if let corner = resizeCorner {
-            let screen = bestScreen(for: originalFrame)
-            guard let screen else { return }
-            place(WidgetGeometry.resize(originalFrame, corner: corner, delta: delta, screen: screen.visibleFrame), screen: screen)
-        } else if dragging {
+        if dragging {
             let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? bestScreen(for: card.frame)
             place(originalFrame.offsetBy(dx: delta.x, dy: delta.y), screen: screen)
         }
     }
 
     func endDrag(onLogo: Bool) {
-        if resizeCorner == nil && !dragging && onLogo { toggleSettings() }
+        if !dragging && onLogo { toggleSettings() }
         setLogoPressed(false)
-        interacting = false; dragging = false; resizeCorner = nil
+        interacting = false; dragging = false
         scheduleSave()
     }
 
@@ -354,14 +332,14 @@ final class WindowCoordinator: NSObject {
         if let data = defaults.data(forKey: "panelPlacement"),
            let saved = try? JSONDecoder().decode(SavedPlacement.self, from: data), saved.valid {
             if let screen = NSScreen.screens.first(where: { screenID($0) == saved.screenID }) {
-                place(CGRect(x: screen.visibleFrame.minX + saved.x, y: screen.visibleFrame.minY + saved.y,
-                             width: saved.width, height: saved.height), screen: screen)
+                place(CGRect(origin: CGPoint(x: screen.visibleFrame.minX + saved.x, y: screen.visibleFrame.minY + saved.y),
+                             size: WidgetMetrics.card), screen: screen)
             } else {
-                card.setContentSize(CGSize(width: saved.width, height: saved.height))
+                card.setContentSize(WidgetMetrics.card)
                 resetPosition()
             }
         } else {
-            card.setContentSize(defaultSize)
+            card.setContentSize(WidgetMetrics.card)
             resetPosition()
         }
     }
@@ -411,18 +389,7 @@ final class WindowCoordinator: NSObject {
             let window = SettingsWindow(size: settingsDefaultSize)
             let actions = SettingsActions(
                 close: { [weak window] in window?.orderOut(nil) },
-                resetPosition: { [weak self] in self?.resetPosition() },
-                saveDefaultSize: { [weak self, weak window] in
-                    guard let window else { return }
-                    self?.defaults.set([window.frame.width, window.frame.height], forKey: "settingsDefaultSize")
-                },
-                resetSize: { [weak self, weak window] in
-                    guard let self, let window else { return }
-                    var frame = window.frame
-                    frame.origin.y = frame.maxY - settingsDefaultSize.height
-                    frame.size = settingsDefaultSize
-                    window.setFrame(frame, display: true, animate: true)
-                })
+                resetPosition: { [weak self] in self?.resetPosition() })
             let host = NSHostingView(rootView: SettingsView(store: store, actions: actions))
             host.sizingOptions = []
             window.contentView = host
@@ -455,19 +422,6 @@ final class WindowCoordinator: NSObject {
         return SettingsView.defaultSize
     }
 
-    func openDataFolder() {
-        do {
-            let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                .appendingPathComponent("Squidd", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            var snapshot: [String: Any] = ["inkOverrides": store.inkChoices, "widgetAppearance": store.widgetAppearance.rawValue]
-            if let size = defaults.array(forKey: "defaultPanelSize") { snapshot["defaultPanelSize"] = size }
-            if let placement = defaults.data(forKey: "panelPlacement"), let value = try? JSONSerialization.jsonObject(with: placement) { snapshot["panelPlacement"] = value }
-            try JSONSerialization.data(withJSONObject: snapshot, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent("preferences-snapshot.json"), options: .atomic)
-            NSWorkspace.shared.open(directory)
-        } catch { store.preferenceError = error.localizedDescription; showSettings() }
-    }
-
     func stop() {
         saveTask?.cancel(); savePlacement()
         pointerTimer?.invalidate(); pointerTimer = nil
@@ -484,18 +438,11 @@ final class WindowCoordinator: NSObject {
 final class PanelInteraction: NSView {
     weak var coordinator: WindowCoordinator?
     var isLauncher = false
-    private var activeCorner: CardCorner?
 
-    private func corner(at point: CGPoint) -> CardCorner? {
-        CardCorner.allCases.first { cornerRect($0).contains(point) }
-    }
-    private func cornerRect(_ corner: CardCorner) -> CGRect {
-        CGRect(x: corner.left ? 26 : bounds.width - 40, y: corner.top ? bounds.height - 40 : 26, width: 14, height: 14)
-    }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
-        if isLauncher || corner(at: local) != nil || NSApp.currentEvent?.type == .rightMouseDown { return self }
+        if isLauncher || NSApp.currentEvent?.type == .rightMouseDown { return self }
         return nil
     }
     override func resetCursorRects() {
@@ -505,7 +452,6 @@ final class PanelInteraction: NSView {
                                                  mascot: store?.pillShowsMascot ?? true),
                           cursor: .openHand)
         }
-        else { for corner in CardCorner.allCases { addCursorRect(cornerRect(corner), cursor: .crosshair) } }
     }
     private func isOnLogo(_ event: NSEvent) -> Bool {
         guard isLauncher else { return false }
@@ -515,12 +461,11 @@ final class PanelInteraction: NSView {
             .contains(convert(event.locationInWindow, from: nil))
     }
     override func mouseDown(with event: NSEvent) {
-        activeCorner = isLauncher ? nil : corner(at: convert(event.locationInWindow, from: nil))
-        if isLauncher || activeCorner != nil { coordinator?.beginDrag(corner: activeCorner, onLogo: isOnLogo(event)) }
+        if isLauncher { coordinator?.beginDrag(onLogo: isOnLogo(event)) }
     }
-    override func mouseDragged(with event: NSEvent) { coordinator?.updateDrag() }
+    override func mouseDragged(with event: NSEvent) { if isLauncher { coordinator?.updateDrag() } }
     override func mouseUp(with event: NSEvent) {
-        coordinator?.endDrag(onLogo: isOnLogo(event)); activeCorner = nil
+        if isLauncher { coordinator?.endDrag(onLogo: isOnLogo(event)) }
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
@@ -534,14 +479,11 @@ final class PanelInteraction: NSView {
                 add("Fix \(player) Connection…", #selector(settings), to: menu)
             }
             menu.addItem(.separator())
-            add("Set Current Size as Default", #selector(saveSize), to: menu)
             #if DEBUG
             add("Save Appearance as Launch Defaults…", #selector(saveAppearanceDefaults), to: menu)
             add("Reset to First Launch…", #selector(resetToFirstLaunch), to: menu)
             #endif
-            add("Reset Size", #selector(resetSize), to: menu)
             add("Reset Position", #selector(reset), to: menu)
-            add("Open Data Folder", #selector(dataFolder), to: menu)
             let login = add("Launch at Login", #selector(login), to: menu)
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             menu.addItem(.separator())
@@ -566,14 +508,11 @@ final class PanelInteraction: NSView {
     @objc private func toggle() { coordinator?.toggleCard() }
     @objc private func openPlayer() { coordinator?.store.openPlayer() }
     @objc private func settings() { coordinator?.showSettings() }
-    @objc private func saveSize() { coordinator?.saveDefaultSize() }
     #if DEBUG
     @objc private func saveAppearanceDefaults() { coordinator?.saveAppearanceDefaults() }
     @objc private func resetToFirstLaunch() { coordinator?.resetToFirstLaunch() }
     #endif
-    @objc private func resetSize() { coordinator?.resetSize() }
     @objc private func reset() { coordinator?.resetPosition() }
-    @objc private func dataFolder() { coordinator?.openDataFolder() }
     @objc private func login() {
         coordinator?.store.toggleLogin()
         if coordinator?.store.preferenceError != nil { coordinator?.showSettings() }

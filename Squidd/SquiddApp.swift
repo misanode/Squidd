@@ -10,7 +10,6 @@ struct SquiddApp: App {
             Button("Show / Hide Player") { delegate.windows?.toggleCard() }
             Button("Settings…") { delegate.windows?.showSettings() }
                 .keyboardShortcut(",")
-            Button("Reset Size") { delegate.windows?.resetSize() }
             Button("Reset Position") { delegate.windows?.resetPosition() }
             Divider()
             Button("Quit Squidd") { NSApp.terminate(nil) }

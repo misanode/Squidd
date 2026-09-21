@@ -7,8 +7,6 @@ import UniformTypeIdentifiers
 struct SettingsActions {
     var close: () -> Void = {}
     var resetPosition: () -> Void = {}
-    var saveDefaultSize: () -> Void = {}
-    var resetSize: () -> Void = {}
 }
 
 @MainActor
@@ -69,10 +67,6 @@ struct SettingsView: View {
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         .background { Button("Close", action: actions.close).keyboardShortcut(.cancelAction).hidden() }
-        .contextMenu {
-            Button("Set Current Size as Default", action: actions.saveDefaultSize)
-            Button("Reset Size", action: actions.resetSize)
-        }
     }
 
     @ViewBuilder private var glass: some View {
