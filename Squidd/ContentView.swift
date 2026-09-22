@@ -215,10 +215,11 @@ struct LauncherView: View {
 
 struct PillPlaceholder: View {
     var name: String
+    var inset: CGFloat = 3
 
     var body: some View {
         Image(name).resizable().scaledToFit()
-            .padding(3)
+            .padding(inset)
             .accessibilityHidden(true)
     }
 }
@@ -320,6 +321,11 @@ struct PreviewArtwork: View {
                     .overlay { Image(systemName: "music.note").foregroundStyle(.white.opacity(0.8)) }
                     .id(store.sampleIndex)
                     .transition(.opacity)
+            } else {
+                GeometryReader { geometry in
+                    PillPlaceholder(name: "pill-placeholder-album", inset: geometry.size.width * 3 / WidgetMetrics.artSize)
+                }
+                .transition(.opacity)
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: store.artwork.map { ObjectIdentifier($0) })
