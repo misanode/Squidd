@@ -205,7 +205,7 @@ nonisolated enum AppleEvents {
         record.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
         record.setDescriptor(NSAppleEventDescriptor(enumCode: form), forKeyword: AEKeyword(keyAEKeyForm))
         record.setDescriptor(data, forKeyword: AEKeyword(keyAEKeyData))
-        return record.coerce(toDescriptorType: code("obj "))!
+        return record.coerce(toDescriptorType: code("obj ")) ?? record
     }
 }
 
@@ -282,7 +282,7 @@ nonisolated struct AppleEventClient: Sendable {
         } catch let error as PlayerBridgeError {
             throw error
         } catch let error as NSError {
-            throw failed(event, status: OSStatus(error.code))
+            throw failed(event, status: OSStatus(truncatingIfNeeded: error.code))
         }
     }
 
