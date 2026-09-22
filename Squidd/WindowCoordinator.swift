@@ -73,6 +73,7 @@ final class WindowCoordinator: NSObject {
         card.becomesKeyOnlyIfNeeded = true
         addInteraction(to: launcher, launcher: true)
         addInteraction(to: card, launcher: false)
+        applyWindowLevel()
         restore()
         hotKeys.action = { [weak self] id, pressed in
             guard let self else { return }
@@ -157,8 +158,16 @@ final class WindowCoordinator: NSObject {
         store.cardVisible.toggle()
         if store.cardVisible {
             card.orderFrontRegardless()
+            if !store.keepOnTop { launcher.orderFrontRegardless() }
             store.boostPlayback()
         } else { card.orderOut(nil) }
+    }
+
+    func applyWindowLevel() {
+        for panel in [card, launcher] {
+            panel.isFloatingPanel = store.keepOnTop
+            panel.level = store.keepOnTop ? .floating : .normal
+        }
     }
 
     private static let glideSpeed: CGFloat = 160
@@ -181,7 +190,7 @@ final class WindowCoordinator: NSObject {
         let now = CACurrentMediaTime()
         let dt = CGFloat(min(0.05, now - glideTick))
         glideTick = now
-        if !NSEvent.modifierFlags.contains(.command) { glideKeys.removeAll() }
+        if !NSEvent.modifierFlags.isSuperset(of: [.control, .option, .command]) { glideKeys.removeAll() }
         var target = CGVector.zero
         for direction in glideKeys.values {
             target.dx += direction.dx * Self.glideSpeed
@@ -389,7 +398,8 @@ final class WindowCoordinator: NSObject {
             let window = SettingsWindow(size: settingsDefaultSize)
             let actions = SettingsActions(
                 close: { [weak window] in window?.orderOut(nil) },
-                resetPosition: { [weak self] in self?.resetPosition() })
+                resetPosition: { [weak self] in self?.resetPosition() },
+                keepOnTopChanged: { [weak self] in self?.applyWindowLevel() })
             let host = NSHostingView(rootView: SettingsView(store: store, actions: actions))
             host.sizingOptions = []
             window.contentView = host
@@ -523,6 +533,6 @@ final class PanelInteraction: NSView {
     @objc private func quit() { NSApp.terminate(nil) }
     override func accessibilityIsIgnored() -> Bool { !isLauncher }
     override func accessibilityRole() -> NSAccessibility.Role? { isLauncher ? .button : nil }
-    override func accessibilityLabel() -> String? { isLauncher ? "Open or close Squidd Settings. Drag to move; Command-slash shows or hides the player." : nil }
+    override func accessibilityLabel() -> String? { isLauncher ? "Open or close Squidd Settings. Drag to move; Control-Option-Command-slash shows or hides the player." : nil }
     override func accessibilityPerformPress() -> Bool { guard isLauncher else { return false }; coordinator?.toggleSettings(); return true }
 }

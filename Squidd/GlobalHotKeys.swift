@@ -24,12 +24,13 @@ final class GlobalHotKeys {
             return noErr
         }, events.count, &events, Unmanaged.passUnretained(self).toOpaque(), &handler)
         guard status == noErr else { return ["Cannot install shortcuts (\(status))."] }
+        let modifiers = UInt32(controlKey | optionKey | cmdKey)
         let bindings: [(UInt32, UInt32, String)] = [
-            (UInt32(kVK_ANSI_Slash), UInt32(cmdKey), "⌘/"),
-            (UInt32(kVK_UpArrow), UInt32(cmdKey), "⌘↑"),
-            (UInt32(kVK_LeftArrow), UInt32(cmdKey), "⌘←"),
-            (UInt32(kVK_DownArrow), UInt32(cmdKey), "⌘↓"),
-            (UInt32(kVK_RightArrow), UInt32(cmdKey), "⌘→")
+            (UInt32(kVK_ANSI_Slash), modifiers, "⌃⌥⌘/"),
+            (UInt32(kVK_UpArrow), modifiers, "⌃⌥⌘↑"),
+            (UInt32(kVK_LeftArrow), modifiers, "⌃⌥⌘←"),
+            (UInt32(kVK_DownArrow), modifiers, "⌃⌥⌘↓"),
+            (UInt32(kVK_RightArrow), modifiers, "⌃⌥⌘→")
         ]
         var errors: [String] = []
         for (index, binding) in bindings.enumerated() {

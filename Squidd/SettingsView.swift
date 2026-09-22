@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct SettingsActions {
     var close: () -> Void = {}
     var resetPosition: () -> Void = {}
+    var keepOnTopChanged: () -> Void = {}
 }
 
 @MainActor
@@ -44,7 +45,6 @@ struct SettingsView: View {
     @Bindable var store: AppStore
     var actions: SettingsActions
     @State private var tab: SettingsTab
-    @State private var keepOnTop = true
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     init(store: AppStore, actions: SettingsActions = SettingsActions()) {
@@ -162,9 +162,7 @@ struct SettingsView: View {
     private var general: some View {
         page(leading: 38, trailing: 43, bottom: 17.5) {
             header("Updates").gap(47)
-            row("general-version", "Squidd version \(Self.version)") {
-                Button("Check For Updates") {}.buttonStyle(OutlineButtonStyle(width: 97.5))
-            }
+            row("general-version", "Squidd version \(Self.version)") { EmptyView() }
             .gap(20)
             header("Behavior").gap(20)
             row("general-reset-position", "Reset Position") {
@@ -173,7 +171,10 @@ struct SettingsView: View {
             }
             .gap(16)
             row("general-keep-on-top", "Keep on top of all windows", spacing: 4.5) {
-                Toggle("Keep on top of all windows", isOn: $keepOnTop).toggleStyle(SwitchStyle())
+                Toggle("Keep on top of all windows", isOn: Binding(get: { store.keepOnTop }, set: {
+                    store.keepOnTop = $0
+                    actions.keepOnTopChanged()
+                })).toggleStyle(SwitchStyle())
             }
             .gap(21)
             header("Startup").gap(23.5)
@@ -437,18 +438,29 @@ struct SettingsView: View {
             label(text).padding(.leading, labelGap)
             Spacer(minLength: 12)
             HStack(spacing: 6) {
-                Icon("keybind-cmd", scale: 0.17)
+                HStack(spacing: 3) {
+                    Image(systemName: "control")
+                    Image(systemName: "option")
+                    Icon("keybind-cmd", scale: 0.17)
+                }
+                .font(.system(size: 15))
+                .foregroundStyle(.white.opacity(0.85))
+                .accessibilityHidden(true)
                 Text("+").font(.system(size: 16, weight: .light)).foregroundStyle(SettingsStyle.secondary)
                 Icon(key).rotationEffect(.degrees(keyRotation)).frame(width: 20, height: 20)
             }
-            .frame(width: 64, alignment: .leading)
+            .frame(width: 100, alignment: .leading)
         }
         .accessibilityElement(children: .combine)
     }
 
     private func firstFrame(of url: URL) -> NSImage? {
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 64
+        ] as CFDictionary
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(source) > 0,
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
         return NSImage(cgImage: image, size: .zero)
     }
 
