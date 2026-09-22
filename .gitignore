@@ -61,3 +61,4 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 Squidd.xcodeproj/NATIVE_PROGRESS.md
+.DS_Store
