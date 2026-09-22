@@ -85,27 +85,22 @@ final class MascotFrames {
 
     nonisolated private static func decode(_ url: URL) -> (frames: [(image: CGImage, delay: Double)], centerY: Double) {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return ([], 0.5) }
-        let decoded: [(image: CGImage, delay: Double)] = (0..<CGImageSourceGetCount(source)).compactMap { index in
-            guard let image = CGImageSourceCreateImageAtIndex(source, index, nil) else { return nil }
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: framePixels
+        ] as CFDictionary
+        let count = min(CGImageSourceGetCount(source), MascotLimits.maxFrames)
+        let decoded: [(image: CGImage, delay: Double)] = (0..<count).compactMap { index in
+            guard let image = CGImageSourceCreateThumbnailAtIndex(source, index, options) else { return nil }
             let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
             let gif = props?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
             let delay = (gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double) ?? (gif?[kCGImagePropertyGIFDelayTime] as? Double) ?? 0.1
-            return (shrunk(image), max(0.02, delay))
+            return (image, max(0.02, delay))
         }
         let layout = visibleLayout(of: decoded.map(\.image))
         let cropped = decoded.map { frame in (layout.box.flatMap { frame.image.cropping(to: $0) } ?? frame.image, frame.delay) }
         return (cropped, layout.centerY)
-    }
-
-    nonisolated private static func shrunk(_ image: CGImage) -> CGImage {
-        let scale = min(1, Double(framePixels) / Double(max(image.width, image.height)))
-        let width = max(1, Int(Double(image.width) * scale)), height = max(1, Int(Double(image.height) * scale))
-        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return image }
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage() ?? image
     }
 
     func verticalOffset(in slot: CGSize) -> CGFloat {

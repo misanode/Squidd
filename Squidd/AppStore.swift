@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import Observation
 import ServiceManagement
 import SwiftUI
@@ -10,6 +11,13 @@ enum PreviewState: String, CaseIterable, Identifiable {
 
 enum InkMode: String, CaseIterable {
     case automatic = "Automatic", white = "White", dark = "Dark grey", scrim = "White on scrim"
+}
+
+nonisolated enum MascotLimits {
+    static let maxBytes = 25_000_000
+    static let maxFrames = 600
+    static let maxDimension = 4096
+    static let maxTotalPixels = 500_000_000
 }
 
 enum WidgetAppearance: String, CaseIterable {
@@ -27,7 +35,7 @@ extension Color {
     }
 
     var hexString: String {
-        let ns = (NSColor(self).usingColorSpace(.deviceRGB)) ?? NSColor(self)
+        guard let ns = NSColor(self).usingColorSpace(.deviceRGB) else { return "#000000" }
         return String(format: "#%02X%02X%02X", Int(round(ns.redComponent * 255)), Int(round(ns.greenComponent * 255)), Int(round(ns.blueComponent * 255)))
     }
 }
@@ -59,6 +67,7 @@ final class AppStore {
     var showPillArtwork: Bool { didSet { defaults.set(showPillArtwork, forKey: "showPillArtwork") } }
     var showMascot: Bool { didSet { defaults.set(showMascot, forKey: "showMascot") } }
     var showMusicNotes: Bool { didSet { defaults.set(showMusicNotes, forKey: "showMusicNotes") } }
+    var keepOnTop: Bool { didSet { defaults.set(keepOnTop, forKey: "keepOnTop") } }
     static let defaultLogoPrimary = Color(hex: "#8D0404") ?? Color(red: 0.55, green: 0.02, blue: 0.02)
     static let defaultLogoHighlight = Color(hex: "#E54B4B") ?? Color(red: 0.9, green: 0.3, blue: 0.3)
     static let defaultLogoCircle = Color.black
@@ -90,6 +99,7 @@ final class AppStore {
         showPillArtwork = defaults.object(forKey: "showPillArtwork") as? Bool ?? true
         showMascot = defaults.object(forKey: "showMascot") as? Bool ?? true
         showMusicNotes = defaults.object(forKey: "showMusicNotes") as? Bool ?? true
+        keepOnTop = defaults.object(forKey: "keepOnTop") as? Bool ?? true
     }
 
     static let launchDefaultKeys: Set<String> = [
@@ -150,28 +160,64 @@ final class AppStore {
         return base
     }
 
-    private func removingExisting(prefix: String, in directory: URL) {
+    private func removingExisting(prefix: String, in directory: URL, except kept: String) {
         guard let items = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
-        for item in items where item.lastPathComponent.hasPrefix(prefix) { try? FileManager.default.removeItem(at: item) }
+        for item in items where item.lastPathComponent.hasPrefix(prefix) && item.lastPathComponent != kept {
+            try? FileManager.default.removeItem(at: item)
+        }
     }
 
     static let mascotErrorPrefix = "Custom mascot"
+    private static let mascotFilePrefix = "custom-mascot-"
+
+    private func isManagedMascot(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        let resolved = { (directory: URL) in directory.standardizedFileURL.resolvingSymlinksInPath().path }
+        return url.lastPathComponent.hasPrefix(Self.mascotFilePrefix)
+            && resolved(url.deletingLastPathComponent()) == resolved(customAssetsDirectory)
+    }
+
+    private func mascotProblem(at source: URL) -> String? {
+        let bytes = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard bytes <= MascotLimits.maxBytes else { return "File is larger than \(MascotLimits.maxBytes / 1_000_000) MB." }
+        guard let image = CGImageSourceCreateWithURL(source as CFURL, nil) else { return "Not a supported image." }
+        let frames = CGImageSourceGetCount(image)
+        guard frames > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else { return "Not a supported image." }
+        guard frames <= MascotLimits.maxFrames else { return "Too many frames (max \(MascotLimits.maxFrames))." }
+        guard max(width, height) <= MascotLimits.maxDimension else {
+            return "Image is larger than \(MascotLimits.maxDimension) px."
+        }
+        guard width * height * frames <= MascotLimits.maxTotalPixels else { return "Animation is too large." }
+        return nil
+    }
 
     func setCustomMascot(from source: URL) {
+        if let problem = mascotProblem(at: source) {
+            preferenceError = "\(Self.mascotErrorPrefix): \(problem)"
+            return
+        }
         let directory = customAssetsDirectory
-        removingExisting(prefix: "custom-mascot-", in: directory)
         let ext = source.pathExtension.isEmpty ? "gif" : source.pathExtension
-        let destination = directory.appendingPathComponent("custom-mascot-\(UUID().uuidString).\(ext)")
+        let destination = directory.appendingPathComponent("\(Self.mascotFilePrefix)\(UUID().uuidString).\(ext)")
         do {
             try FileManager.default.copyItem(at: source, to: destination)
+            removingExisting(prefix: Self.mascotFilePrefix, in: directory, except: destination.lastPathComponent)
             customMascotPath = destination.path
             preferenceError = nil
-        } catch { preferenceError = "\(Self.mascotErrorPrefix): \(error.localizedDescription)" }
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            preferenceError = "\(Self.mascotErrorPrefix): \(error.localizedDescription)"
+        }
     }
 
     func resetCustomMascot() {
-        if let path = customMascotPath { try? FileManager.default.removeItem(atPath: path) }
+        if let path = customMascotPath, isManagedMascot(path) { try? FileManager.default.removeItem(atPath: path) }
         customMascotPath = nil
+        if preferenceError?.hasPrefix(Self.mascotErrorPrefix) == true { preferenceError = nil }
     }
 
     var isPlaying: Bool { preview == .off ? playback.isPlaying : preview == .playing }
