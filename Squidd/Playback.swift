@@ -173,7 +173,7 @@ final class Playback {
 
     func receive(notification userInfo: [AnyHashable: Any], from sender: MusicApp = .spotify) {
         guard enabled, sources[sender] != nil,
-              let snapshot = NowPlayingSnapshot(notification: userInfo, from: sender) else { return }
+              var snapshot = NowPlayingSnapshot(notification: userInfo, from: sender) else { return }
         log.debug("""
             \(sender.name, privacy: .public) broadcast: \(String(describing: snapshot.state), privacy: .public) \
             \(snapshot.trackID, privacy: .public) “\(snapshot.name, privacy: .public)” (following \(self.app.name, privacy: .public))
@@ -181,6 +181,15 @@ final class Playback {
         if sender != app {
             guard snapshot.isPlaying else { return }
             follow(sender)
+        }
+        if snapshot.trackID.isEmpty && snapshot.state != .stopped && !snapshot.name.isEmpty {
+            guard let current = self.snapshot, current.app == sender, current.isLoaded,
+                  current.name == snapshot.name, current.artist == snapshot.artist else {
+                sleeper?.cancel()
+                return
+            }
+            snapshot.trackID = current.trackID
+            snapshot.hasArtwork = current.hasArtwork
         }
         apply(snapshot)
         if snapshot.positionSeconds == nil && snapshot.isLoaded { sleeper?.cancel() }
