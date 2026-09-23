@@ -216,12 +216,6 @@ struct PlaybackRim: View {
             }
 
             ZStack {
-                Capsule().strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.12), .white.opacity(0.3)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.6)
-                Capsule().inset(by: 1.5).strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.15), .clear, .black.opacity(0.12)],
-                                   startPoint: .top, endPoint: .bottom), lineWidth: 0.5)
                 ZStack {
                     Capsule().strokeBorder(primaryColor.opacity(0.75), lineWidth: 0.8)
                     Capsule().strokeBorder(primaryColor, lineWidth: 2)

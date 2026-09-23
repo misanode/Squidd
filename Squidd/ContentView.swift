@@ -46,20 +46,8 @@ struct NativeGlass: ViewModifier {
             content.background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: radius))
         } else {
             content.background {
-                RoundedRectangle(cornerRadius: radius)
-                    .fill(.black.opacity(dark ? 0.5 : 0))
-                    .allowsHitTesting(false)
-            }
-            .background {
-                RoundedRectangle(cornerRadius: radius)
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.2)
-                    .allowsHitTesting(false)
-            }
-            .background {
                 Color.clear
-                    .glassEffect(.clear, in: RoundedRectangle(cornerRadius: radius))
-                    .opacity(0.88)
+                    .glassEffect(dark ? .clear.tint(.black.opacity(0.35)) : .clear, in: RoundedRectangle(cornerRadius: radius))
                     .allowsHitTesting(false)
             }
         }
@@ -122,7 +110,6 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(2)
         .modifier(NativeGlass(radius: 24, appearance: store.widgetAppearance))
-        .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.5), lineWidth: 0.5).allowsHitTesting(false) }
         .foregroundStyle(reduceTransparency || contrast == .increased ? Color.primary : (store.ink == .dark ? Color(white: 0.07) : .white))
         .overlay {
             PlaybackParticles(active: store.showMusicNotes && store.isPlaying && store.cardVisible && !store.sleeping,
