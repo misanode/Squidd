@@ -245,6 +245,7 @@ final class Playback {
     private func valid(_ current: UUID) -> Bool { generation == current && enabled && !Task.isCancelled }
 
     private var nextPollDelay: Double {
+        if isPlaying && duration > 0 && elapsed >= duration { return min(0.5, pollInterval) }
         if let boostUntil, boostUntil > Date() { return boostInterval }
         if background { return backgroundPollInterval }
         return isPlaying ? pollInterval : idlePollInterval
@@ -408,8 +409,10 @@ final class Playback {
                 do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
                 guard let self else { return }
                 let now = ProcessInfo.processInfo.systemUptime
+                let before = self.elapsed
                 self.elapsed = min(self.duration, self.elapsed + now - self.lastTick)
                 self.lastTick = now
+                if self.duration > 0 && before < self.duration && self.elapsed >= self.duration { self.sleeper?.cancel() }
             }
         }
     }
