@@ -44,13 +44,18 @@ actor AppleMusicEventBridge: NowPlayingSource {
 
     func artwork(for trackID: String) async throws -> ArtworkReference? {
         try ready()
-        let artwork = AppleEvents.element(AppleEvents.code("cArt"), index: 1, of: client.currentTrack)
+        let artworkElement = AppleEvents.element(AppleEvents.code("cArt"), index: 1, of: client.currentTrack)
         do {
-            let value = try client.get(AppleEvents.property(AppleEvents.code("pRaw"), of: artwork))
-            return value.data.isEmpty ? nil : .embedded(key: "\(trackID)#artwork", data: value.data)
-        } catch PlayerBridgeError.nothingPlaying {
-            return nil
-        }
+            let value = try client.get(AppleEvents.property(AppleEvents.code("pRaw"), of: artworkElement))
+            if !value.data.isEmpty { return .embedded(key: "\(trackID)#artwork", data: value.data) }
+        } catch PlayerBridgeError.nothingPlaying {}
+        let name: String
+        do { name = try client.trackText("pnam") } catch PlayerBridgeError.nothingPlaying { return nil }
+        guard !name.isEmpty else { return nil }
+        let artist = (try? client.trackText("pArt")) ?? ""
+        let album = (try? client.trackText("pAlb")) ?? ""
+        guard let url = try await ITunesArtworkLookup.shared.url(name: name, artist: artist, album: album) else { return nil }
+        return .remote(url)
     }
 
     func send(_ command: PlaybackCommand) async throws {
