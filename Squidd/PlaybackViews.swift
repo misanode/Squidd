@@ -44,6 +44,7 @@ struct SeekBarView: View {
             }
         }
         .focusable(enabled)
+        .focusEffectDisabled()
         .onKeyPress(.leftArrow) { guard enabled else { return .ignored }; seek(max(0, elapsed - 5)); return .handled }
         .onKeyPress(.rightArrow) { guard enabled else { return .ignored }; seek(min(duration, elapsed + 5)); return .handled }
     }
