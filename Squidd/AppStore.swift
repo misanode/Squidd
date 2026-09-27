@@ -24,7 +24,6 @@ enum WidgetAppearance: String, CaseIterable {
 
     var isDark: Bool { self == .dark }
 }
-
 extension Color {
     init?(hex: String) {
         var hex = hex.trimmingCharacters(in: .whitespacesAndNewlines)
