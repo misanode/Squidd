@@ -242,7 +242,6 @@ struct SquiddLogo: View {
         .accessibilityHidden(true)
     }
 }
-
 struct TransportGlyph: Shape {
     enum Kind { case previous, play, pause, next }
     var kind: Kind
