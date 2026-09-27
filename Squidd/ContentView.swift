@@ -232,7 +232,6 @@ struct PillSlot: ViewModifier, Animatable {
 struct SquiddLogo: View {
     var primary: Color
     var highlight: Color
-
     var body: some View {
         ZStack {
             Image("Squidd-Logo-Primary").renderingMode(.template).resizable().foregroundStyle(primary)
