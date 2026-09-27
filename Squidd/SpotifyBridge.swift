@@ -41,7 +41,6 @@ actor SpotifyEventBridge: NowPlayingSource {
         }
         return snapshot
     }
-
     func artwork(for trackID: String) async throws -> ArtworkReference? {
         try ready()
         do {
