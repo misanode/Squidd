@@ -17,7 +17,6 @@ struct SquiddApp: App {
         }
     }
 }
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var windows: WindowCoordinator?
