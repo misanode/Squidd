@@ -123,7 +123,6 @@ final class Playback {
         message = nil; commandMessageUntil = nil
         sleeper?.cancel()
     }
-
     func setSuspended(_ value: Bool) {
         guard value != suspended else { return }
         suspended = value
