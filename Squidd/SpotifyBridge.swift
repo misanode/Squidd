@@ -50,7 +50,6 @@ actor SpotifyEventBridge: NowPlayingSource {
             return nil
         }
     }
-
     func send(_ command: PlaybackCommand) async throws {
         try ready()
         switch command {
