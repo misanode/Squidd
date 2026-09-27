@@ -8,7 +8,6 @@ enum PreviewState: String, CaseIterable, Identifiable {
     case off = "Off", playing = "Playing", paused = "Paused", idle = "Idle", error = "Error"
     var id: String { rawValue }
 }
-
 enum InkMode: String, CaseIterable {
     case automatic = "Automatic", white = "White", dark = "Dark grey", scrim = "White on scrim"
 }
