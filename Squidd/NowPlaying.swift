@@ -16,7 +16,6 @@ nonisolated enum MusicApp: String, CaseIterable, Sendable {
         case .music: "com.apple.Music"
         }
     }
-
     var name: String {
         switch self {
         case .spotify: "Spotify"
