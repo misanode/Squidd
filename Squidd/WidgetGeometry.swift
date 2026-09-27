@@ -12,7 +12,6 @@ enum WidgetGeometry {
                       y: max(screen.minY, min(frame.minY, screen.maxY - height - launcherAllowance)),
                       width: width, height: height)
     }
-
     static func launcher(for card: CGRect) -> CGRect {
         CGRect(x: card.midX - 84.5, y: card.maxY - 8, width: 169, height: 80)
     }
