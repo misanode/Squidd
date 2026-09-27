@@ -9,7 +9,6 @@ actor AppleMusicEventBridge: NowPlayingSource {
         self.timeout = max(0.1, timeout)
         client = AppleEventClient(app: .music, timeout: AppleEventClient.firstContactTimeout)
     }
-
     private func ready() throws {
         guard MusicApp.music.isRunning else { throw PlayerBridgeError.notRunning }
     }
