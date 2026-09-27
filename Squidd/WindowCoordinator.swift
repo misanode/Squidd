@@ -29,7 +29,6 @@ final class FloatingPanel: NSPanel {
     @objc dynamic func hasKeyAppearance() -> Bool { true }
 
 }
-
 private struct SavedPlacement: Codable {
     var screenID: UInt32
     var x: Double
