@@ -136,7 +136,6 @@ final class Playback {
         if !value { start() }
     }
     func setBackground(_ value: Bool) { background = value }
-
     func retry() {
         guard canRetry else { return }
         failures = 0; retryAt = nil
