@@ -144,9 +144,9 @@ struct SpotifyPlaybackChecks {
             print("Integration checks skipped: Spotify isn't running")
             return
         }
-        let permission = Automation.permission(for: .spotify)
+        let permission = await Automation.permission(for: .spotify)
         guard permission == .granted else {
-            print("Integration checks skipped: Automation permission is \(permission)")
+            print("Integration checks skipped: Automation permission is \(permission.map { "\($0)" } ?? "unknown")")
             return
         }
         let bridge = SpotifyEventBridge()
@@ -187,9 +187,9 @@ struct SpotifyPlaybackChecks {
             print("Apple Music integration checks skipped: Music isn't running")
             return
         }
-        let permission = Automation.permission(for: .music)
+        let permission = await Automation.permission(for: .music)
         guard permission == .granted else {
-            print("Apple Music integration checks skipped: Automation permission is \(permission)")
+            print("Apple Music integration checks skipped: Automation permission is \(permission.map { "\($0)" } ?? "unknown")")
             return
         }
         let bridge = AppleMusicEventBridge()
