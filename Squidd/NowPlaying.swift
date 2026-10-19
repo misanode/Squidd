@@ -39,6 +39,13 @@ nonisolated enum MusicApp: String, CaseIterable, Sendable {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
     }
 
+    var eventTarget: NSAppleEventDescriptor {
+        guard let process = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first else {
+            return NSAppleEventDescriptor(bundleIdentifier: bundleIdentifier)
+        }
+        return NSAppleEventDescriptor(processIdentifier: process.processIdentifier)
+    }
+
     func open() {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: .init())
@@ -220,7 +227,7 @@ nonisolated struct AppleEventClient: Sendable {
     func event(_ eventClass: String, _ eventID: String) -> NSAppleEventDescriptor {
         NSAppleEventDescriptor.appleEvent(
             withEventClass: AppleEvents.code(eventClass), eventID: AppleEvents.code(eventID),
-            targetDescriptor: NSAppleEventDescriptor(bundleIdentifier: app.bundleIdentifier),
+            targetDescriptor: app.eventTarget,
             returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
     }
 
@@ -300,15 +307,49 @@ nonisolated struct AppleEventClient: Sendable {
 nonisolated enum Automation {
     enum Permission: Equatable, Sendable { case granted, denied, notAsked, appNotRunning }
 
-    static func permission(for app: MusicApp, askIfNeeded: Bool = false) -> Permission {
+    private struct Request: Hashable, Sendable {
+        let app: MusicApp
+        let ask: Bool
+    }
+
+    private static let waiters = OSAllocatedUnfairLock(
+        initialState: [Request: [UUID: CheckedContinuation<Permission?, Never>]]())
+
+    static func permission(for app: MusicApp, askIfNeeded: Bool = false, timeout: TimeInterval = 3) async -> Permission? {
         guard app.isRunning else { return .appNotRunning }
-        let target = NSAppleEventDescriptor(bundleIdentifier: app.bundleIdentifier)
-        guard let descriptor = target.aeDesc else { return .notAsked }
-        switch AEDeterminePermissionToAutomateTarget(descriptor, typeWildCard, typeWildCard, askIfNeeded) {
-        case noErr: return .granted
-        case OSStatus(-1744): return .notAsked
-        case OSStatus(-1743): return .denied
-        default: return .denied
+        let request = Request(app: app, ask: askIfNeeded)
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            let first = waiters.withLock { waiters in
+                let first = waiters[request] == nil
+                waiters[request, default: [:]][id] = continuation
+                return first
+            }
+            if first {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let permission = blockingPermission(for: app, askIfNeeded: askIfNeeded)
+                    let waiting = waiters.withLock { $0.removeValue(forKey: request) } ?? [:]
+                    for waiter in waiting.values { waiter.resume(returning: permission) }
+                }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + max(0.1, timeout)) {
+                let expired = waiters.withLock { $0[request]?.removeValue(forKey: id) }
+                expired?.resume(returning: nil)
+            }
+        }
+    }
+
+    private static func blockingPermission(for app: MusicApp, askIfNeeded: Bool) -> Permission {
+        guard app.isRunning else { return .appNotRunning }
+        let target = app.eventTarget
+        return withExtendedLifetime(target) {
+            guard let descriptor = target.aeDesc else { return .notAsked }
+            switch AEDeterminePermissionToAutomateTarget(descriptor, typeWildCard, typeWildCard, askIfNeeded) {
+            case noErr: return .granted
+            case OSStatus(-1744): return .notAsked
+            case OSStatus(-1743): return .denied
+            default: return .denied
+            }
         }
     }
 

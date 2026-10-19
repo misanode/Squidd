@@ -56,7 +56,7 @@ final class Playback {
     init(source: (any NowPlayingSource)? = nil, sources: [MusicApp: any NowPlayingSource]? = nil,
          isRunning: @escaping (MusicApp) -> Bool = { $0.isRunning },
          isPermitted: @escaping (MusicApp) async -> Bool = { app in
-             await Task.detached { Automation.permission(for: app) == .granted }.value
+             await Automation.permission(for: app) == .granted
          },
          images: (any ArtworkLoading)? = nil,
          pollInterval: Double = 15, idlePollInterval: Double? = nil, backgroundPollInterval: Double? = nil,
@@ -378,8 +378,9 @@ final class Playback {
             retryAt = Date().addingTimeInterval(30)
             let refused = app
             Task { [weak self] in
-                let permission = await Task.detached { Automation.permission(for: refused) }.value
-                guard let self, self.app == refused, [.permissionNeeded, .permissionDenied].contains(self.state) else { return }
+                let permission = await Automation.permission(for: refused)
+                guard let self, let permission, self.app == refused,
+                      [.permissionNeeded, .permissionDenied].contains(self.state) else { return }
                 self.state = permission == .notAsked ? .permissionNeeded : .permissionDenied
             }
             return

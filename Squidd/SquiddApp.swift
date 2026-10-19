@@ -24,8 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         windows = WindowCoordinator(store: AppStore())
         windows?.show()
-        let permissions = MusicApp.allCases.map { Automation.permission(for: $0) }
-        if !permissions.contains(.granted) && permissions.contains(.notAsked) { windows?.showSettings() }
+        Task {
+            var permissions: [Automation.Permission?] = []
+            for app in MusicApp.allCases { permissions.append(await Automation.permission(for: app)) }
+            if !permissions.contains(.granted) && permissions.contains(.notAsked) { windows?.showSettings() }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) { windows?.stop() }

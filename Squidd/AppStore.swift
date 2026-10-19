@@ -115,13 +115,16 @@ final class AppStore {
     }
 
     func refreshAutomation() async {
-        automation = await Task.detached {
-            Dictionary(uniqueKeysWithValues: MusicApp.allCases.map { ($0, Automation.permission(for: $0)) })
-        }.value
+        async let spotify = Automation.permission(for: .spotify)
+        async let music = Automation.permission(for: .music)
+        let results: [MusicApp: Automation.Permission?] = [.spotify: await spotify, .music: await music]
+        for (app, permission) in results {
+            if let permission { automation[app] = permission }
+        }
     }
 
     func requestAutomation(for app: MusicApp) async {
-        _ = await Task.detached { Automation.permission(for: app, askIfNeeded: true) }.value
+        _ = await Automation.permission(for: app, askIfNeeded: true, timeout: 120)
         await refreshAutomation()
         playback.retry()
     }
