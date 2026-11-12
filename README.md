@@ -2,16 +2,6 @@
   <img src=".github/assets/squidd-logo.png" alt="Squidd" width="149" />
 </p>
 
-<h1 align="center">Squidd</h1>
-
-<p align="center">
-  A little music player that floats on your Mac desktop.<br />
-  Squidd keeps whatever’s playing in <strong>Spotify</strong> or <strong>Apple Music</strong> in a small glass player,<br />
-  with a pill that glows while your song plays.
-</p>
-
-<br />
-
 <p align="center">
   <img src=".github/assets/get-for-mac.svg" alt="Get for Mac" width="242" />
 </p>
