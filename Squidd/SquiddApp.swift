@@ -20,10 +20,21 @@ struct SquiddApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var windows: WindowCoordinator?
+    private var splash: SplashWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         windows = WindowCoordinator(store: AppStore())
-        windows?.show()
+        if let splash = SplashWindow(screen: NSScreen.main) {
+            self.splash = splash
+            splash.show { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    self?.windows?.show()
+                    self?.splash?.dismiss { self?.splash = nil }
+                }
+            }
+        } else {
+            windows?.show()
+        }
         Task {
             var permissions: [Automation.Permission?] = []
             for app in MusicApp.allCases { permissions.append(await Automation.permission(for: app)) }
@@ -31,7 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) { windows?.stop() }
+    func applicationWillTerminate(_ notification: Notification) {
+        splash?.tearDown()
+        windows?.stop()
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
